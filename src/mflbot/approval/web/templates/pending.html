@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Awaiting your decision ({{ recommendations|length }})</h2>
+{% if not recommendations %}
+  <p>Nothing pending. Silence means no action is taken.</p>
+{% endif %}
+{% for r in recommendations %}
+  <div class="card">
+    <h3><a href="/recommendation/{{ r.id }}">{{ r.kind }}</a>
+      <span class="conf-{{ r.confidence }}">({{ r.confidence }} confidence)</span></h3>
+    <p>{{ r.payload.describe() }}</p>
+    <p><small>Expires {{ r.expires_at.strftime('%Y-%m-%d %H:%M UTC') }}</small></p>
+  </div>
+{% endfor %}
+
+<h2>Recent</h2>
+<ul>
+{% for r in recent %}
+  <li><a href="/recommendation/{{ r.id }}">{{ r.id }}</a> — {{ r.kind }} — {{ r.status }}</li>
+{% endfor %}
+</ul>
+{% endblock %}

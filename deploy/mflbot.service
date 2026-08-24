@@ -1,0 +1,58 @@
+# systemd unit for the mflbot scheduler.
+#
+# Install:
+#   sudo cp deploy/mflbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mflbot
+#
+# The service only produces recommendations. Approving one is a separate,
+# interactive act, run as the same user:
+#   sudo -u mflbot /opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml pending
+#   sudo -u mflbot /opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml approve <id>
+
+[Unit]
+Description=mflbot -- MyFantasyLeague monitoring and advisory bot
+Documentation=https://github.com/nbarr1/FantasyFootballBot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mflbot
+Group=mflbot
+WorkingDirectory=/opt/mflbot
+
+# Credentials. The file must be mode 0600 and owned by the service user;
+# systemd reads it as root before dropping privileges.
+EnvironmentFile=/etc/mflbot/secrets.env
+
+ExecStart=/opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml run
+
+Restart=on-failure
+RestartSec=30s
+
+# Hardening. The bot needs outbound HTTPS and its own state directory; nothing
+# else. Credentials in the environment are not readable by other users.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/opt/mflbot
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mflbot
+
+[Install]
+WantedBy=multi-user.target

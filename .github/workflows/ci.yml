@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor declared in pyproject; 3.12 is what the Dockerfile runs.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        # A real (non-editable) install, because that is how the Dockerfile and
+        # the systemd deployment install it -- and packaging bugs only show up
+        # this way.
+        run: |
+          python -m pip install --upgrade pip
+          pip install '.[solver,dev]'
+
+      - name: Tests
+        run: pytest -q
+
+      - name: CLI smoke test
+        # Runs from a scratch directory outside the source tree, so anything
+        # that only works because the repo happens to be the working directory
+        # fails here.
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          cd "$RUNNER_TEMP/smoke"
+
+          bot --help > /dev/null
+          bot init
+          test -f config.toml
+
+          # A fresh install must report an empty store and every write blocked.
+          # These two assertions are the packaging-level counterpart to
+          # test_no_seed_data.py and test_write_isolation.py.
+          MFLBOT_APPROVAL_SECRET=ci-smoke-key bot status > status.txt
+          cat status.txt
+
+          grep -qE '^  players +0$' status.txt \
+            || { echo "::error::a fresh install did not report an empty player table"; exit 1; }
+          grep -q 'Write capabilities verified: 0/6' status.txt \
+            || { echo "::error::write capabilities were not blocked on a fresh install"; exit 1; }
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # Pinned: an unpinned linter turns a green PR red on someone else's
+      # release schedule.
+      - run: pip install ruff==0.15.8
+      - name: Lint
+        run: ruff check --output-format=github .
