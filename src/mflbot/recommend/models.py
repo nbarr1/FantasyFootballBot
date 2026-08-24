@@ -110,7 +110,14 @@ class LineupPayload(ActionPayload):
     DISPLAY_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"slot_names"})
 
     def describe(self) -> str:
-        pairs = zip(self.slot_names or ("?",) * len(self.starter_ids), self.starter_ids)
+        # Every starter must appear, even if slot_names is short or absent.
+        # Zipping the two directly would silently drop the trailing starters
+        # from the description -- under-reporting what is about to be sent, on
+        # the exact text the user reads before approving it.
+        slots = self.slot_names + ("?",) * (
+            len(self.starter_ids) - len(self.slot_names)
+        )
+        pairs = zip(slots, self.starter_ids, strict=True)
         return (
             f"Set week {self.week} lineup for franchise {self.franchise_id}: "
             + ", ".join(f"{slot}={pid}" for slot, pid in pairs)

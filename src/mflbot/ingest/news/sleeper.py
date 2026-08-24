@@ -20,8 +20,9 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ...domain.models import NewsItem, Player
 from .base import Classification, NewsSource

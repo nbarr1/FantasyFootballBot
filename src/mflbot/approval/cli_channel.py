@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Sequence
+from collections.abc import Sequence
 
 from ..errors import ApprovalError
 from ..recommend.models import (

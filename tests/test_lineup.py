@@ -11,11 +11,11 @@ import pytest
 
 from mflbot.analysis.lineup import (
     Candidate,
+    _is_laminar,
     assess_risks,
     diff_lineup,
     optimise_lineup,
     solve_greedy,
-    _is_laminar,
 )
 from mflbot.domain.models import LineupSlot, Player
 from mflbot.errors import Missing

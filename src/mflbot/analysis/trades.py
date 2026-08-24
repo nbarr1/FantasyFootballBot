@@ -17,12 +17,12 @@ helps one side is not surfaced, because it would obviously be declined.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Sequence
 
-from ..domain.models import LeagueSettings, Player
-from ..errors import BlockedFeature, Missing
+from ..domain.models import LeagueSettings
+from ..errors import BlockedFeature
 from ..mfl.endpoints import Capability
 from ..recommend.models import (
     Confidence,
@@ -32,7 +32,7 @@ from ..recommend.models import (
     TradeProposalPayload,
     TradeResponsePayload,
 )
-from .waivers import PlayerValue, value_players
+from .waivers import PlayerValue
 
 log = logging.getLogger(__name__)
 
@@ -258,16 +258,18 @@ def draft_proposals(
 
         give_value = give.rest_of_season or 0.0
         get_value = get.rest_of_season or 0.0
-        our_gain = round(get_value - give_value, 2)
-        # The counterparty's gain is judged by *their* roster shape: they are
-        # trading from their own surplus into their own need.
-        their_gain = round(give_value - get_value, 2)
 
-        # Both sides must come out ahead on their own terms. Since raw point
-        # totals are zero-sum, the mutual gain comes from positional fit: each
-        # side converts bench value into starting value.
-        our_start_gain = _starting_value_gain(ours, get_position, get_value, give_position, give_value)
-        their_start_gain = _starting_value_gain(theirs, give_position, give_value, get_position, get_value)
+        # Both sides must come out ahead on their own terms. A raw point
+        # difference cannot show that -- it is zero-sum, so one side's gain is
+        # always the other's loss. The mutual gain comes from positional fit
+        # instead: each side judges the swap against its *own* roster shape,
+        # converting bench value into a starting seat.
+        our_start_gain = _starting_value_gain(
+            ours, get_position, get_value, give_position, give_value
+        )
+        their_start_gain = _starting_value_gain(
+            theirs, give_position, give_value, get_position, get_value
+        )
 
         if our_start_gain < trade_settings.min_mutual_gain:
             continue

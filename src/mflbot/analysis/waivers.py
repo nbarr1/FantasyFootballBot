@@ -13,9 +13,9 @@ the league rejects, or a bid sized from an invented number.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Sequence
 
 from ..domain.models import LeagueSettings, Player, WaiverSystem
 from ..errors import BlockedFeature, Missing

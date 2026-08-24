@@ -26,7 +26,9 @@ def test_migrated_database_is_completely_empty(db: Database) -> None:
 
 def test_example_config_contains_no_scoring_or_roster_data() -> None:
     """Behaviour thresholds belong in config; league data does not."""
-    text = (REPO_ROOT / "config.example.toml").read_text(encoding="utf-8").lower()
+    text = (
+        REPO_ROOT / "src" / "mflbot" / "templates" / "config.example.toml"
+    ).read_text(encoding="utf-8").lower()
     forbidden = [
         "points_per",
         "passing_yards",
@@ -40,7 +42,7 @@ def test_example_config_contains_no_scoring_or_roster_data() -> None:
     ]
     present = [token for token in forbidden if token in text]
     assert not present, (
-        f"config.example.toml declares league data that must come from the API: "
+        f"the config template declares league data that must come from the API: "
         f"{present}"
     )
 

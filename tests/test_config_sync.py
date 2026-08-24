@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from mflbot.analysis.rules_parser import ParsedRules, ScoringRule, ScoringRuleGap
 from mflbot.domain.models import WaiverSystem
 from mflbot.errors import ParseError
 from mflbot.ingest.config_sync import (
@@ -20,7 +21,6 @@ from mflbot.ingest.config_sync import (
     parse_league_settings,
     parse_lineup_slots,
 )
-from mflbot.analysis.rules_parser import ParsedRules, ScoringRule, ScoringRuleGap
 
 
 def test_probe_records_a_miss_instead_of_returning_a_default() -> None:

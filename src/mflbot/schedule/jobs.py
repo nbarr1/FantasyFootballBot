@@ -23,9 +23,9 @@ human approves through :mod:`mflbot.approval`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Callable
 
 log = logging.getLogger(__name__)
 

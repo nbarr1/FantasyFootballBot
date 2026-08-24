@@ -128,11 +128,12 @@ def test_unverified_endpoint_blocks_the_write_before_anything_is_sent(
 
 def test_forged_token_blocks_the_write_before_anything_is_sent(db, tokens) -> None:
     """Even with a fully verified endpoint, a bad token stops the request."""
+    from datetime import UTC, datetime, timedelta
+
     from mflbot.approval.token import ApprovalToken
     from mflbot.config import LeagueRef
     from mflbot.mfl.auth import AuthState, Credentials
     from mflbot.recommend.models import LineupPayload
-    from datetime import UTC, datetime, timedelta
 
     class ExplodingTransport:
         def post(self, *args, **kwargs):  # pragma: no cover - must never run

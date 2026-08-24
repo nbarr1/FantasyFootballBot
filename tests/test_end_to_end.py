@@ -15,6 +15,8 @@ import json
 
 import pytest
 
+from mflbot.approval.cli_channel import CLIApprovalChannel
+from mflbot.approval.token import TokenService
 from mflbot.config import (
     Config,
     LeagueRef,
@@ -29,13 +31,11 @@ from mflbot.mfl.cache import ResponseCache
 from mflbot.mfl.client import MFLReadClient
 from mflbot.mfl.endpoints import EndpointRegistry
 from mflbot.mfl.ratelimit import RateLimiter, RateLimitPolicy
+from mflbot.notify.base import NullNotifier
 from mflbot.recommend.models import RecommendationKind, RecommendationStatus
+from mflbot.recommend.store import RecommendationStore
 from mflbot.storage.db import Database
 from mflbot.storage.repositories import Repositories
-from mflbot.recommend.store import RecommendationStore
-from mflbot.approval.token import TokenService
-from mflbot.approval.cli_channel import CLIApprovalChannel
-from mflbot.notify.base import NullNotifier
 
 LEAGUE_ID = "TEST0001"
 SEASON = 2026

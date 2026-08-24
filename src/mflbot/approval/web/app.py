@@ -8,12 +8,12 @@ hold: one token per recommendation, bound to the payload, single-use.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from ...errors import ApprovalError
 from ...recommend.models import Recommendation
-from ..channel import ApprovalChannel, ApprovalDecision, Decision
+from ..channel import ApprovalChannel, ApprovalDecision
 from ..cli_channel import CLIApprovalChannel
 
 log = logging.getLogger(__name__)

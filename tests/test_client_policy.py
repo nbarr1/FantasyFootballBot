@@ -12,7 +12,7 @@ import pytest
 
 from mflbot.config import LeagueRef
 from mflbot.errors import AuthError, ParseError, TransportError
-from mflbot.mfl.auth import AuthState, Credentials, parse_login_response, redact
+from mflbot.mfl.auth import Credentials, parse_login_response, redact
 from mflbot.mfl.cache import ResponseCache, cache_key
 from mflbot.mfl.client import MFLReadClient, as_list, unwrap
 from mflbot.mfl.ratelimit import RateLimiter, RateLimitPolicy

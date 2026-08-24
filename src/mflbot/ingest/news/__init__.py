@@ -1,9 +1,9 @@
 """Player news ingestion behind a swappable source interface."""
 
-from .base import NewsSource, Classification
+from .base import Classification, NewsSource
 from .mfl_injuries import MFLInjurySource
+from .registry import SOURCE_REGISTRY, build_sources
 from .sleeper import SleeperSource
-from .registry import build_sources, SOURCE_REGISTRY
 
 __all__ = [
     "NewsSource",

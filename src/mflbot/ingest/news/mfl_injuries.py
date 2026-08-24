@@ -7,8 +7,8 @@ credentials beyond the MFL client the bot already has.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
-from typing import Iterable, Sequence
 
 from ...analysis.rules_parser import mfl_text
 from ...domain.models import NewsItem

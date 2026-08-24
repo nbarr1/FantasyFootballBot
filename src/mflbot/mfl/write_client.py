@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 
 from ..approval.token import ApprovalToken, TokenService
 from ..config import LeagueRef
-from ..errors import ApprovalError, EndpointNotVerifiedError, TransportError
+from ..errors import EndpointNotVerifiedError, TransportError
 from ..recommend.models import ActionPayload, payload_hash
 from .auth import AuthState, redact
 from .endpoints import Capability, EndpointRegistry

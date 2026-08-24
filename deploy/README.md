@@ -18,7 +18,7 @@ sudo -u mflbot git clone https://github.com/nbarr1/FantasyFootballBot /opt/mflbo
 sudo -u mflbot python3 -m venv /opt/mflbot/.venv
 sudo -u mflbot /opt/mflbot/.venv/bin/pip install '/opt/mflbot[solver]'
 
-sudo -u mflbot cp /opt/mflbot/config.example.toml /opt/mflbot/config.toml
+sudo -u mflbot /opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml init
 sudo -u mflbot "$EDITOR" /opt/mflbot/config.toml
 
 # Credentials, mode 0600, root-owned (systemd reads it before dropping privs).
@@ -35,7 +35,8 @@ journalctl -u mflbot -f
 
 ```bash
 mkdir -p deploy/state
-cp config.example.toml deploy/state/config.toml
+docker run --rm -v "$PWD/deploy/state:/data" -w /data \
+  "$(docker build -q .)" init
 $EDITOR deploy/state/config.toml
 
 cat > deploy/.env <<'EOF'

@@ -185,3 +185,27 @@ def test_a_recommendation_cannot_be_approved_twice(store, tokens) -> None:
     channel.approve(recommendation.id)
     with pytest.raises(ApprovalError, match="already"):
         channel.approve(recommendation.id)
+
+
+def test_lineup_description_lists_every_starter_being_submitted() -> None:
+    """The description must never under-report the action.
+
+    It is the text the user reads before approving a real submission, so a
+    starter missing from it means approving something other than what was
+    shown. Slot names are cosmetic and may be short or absent; the starter list
+    is not.
+    """
+    for slot_names in ((), ("QB",), ("QB", "RB"), ("QB", "RB", "WR")):
+        payload = LineupPayload(
+            capability=Capability.SUBMIT_LINEUP,
+            league_id="TEST0001",
+            franchise_id="0001",
+            week=5,
+            starter_ids=("p-qb1", "p-rb1", "p-wr1"),
+            slot_names=slot_names,
+        )
+        described = payload.describe()
+        missing = [p for p in payload.starter_ids if p not in described]
+        assert not missing, (
+            f"slot_names={slot_names!r} dropped {missing} from the description"
+        )

@@ -9,8 +9,8 @@ turn "unknown" into "bad", which is a different claim entirely.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from ..errors import Missing
 from ..ingest.scores import MFL_PROJECTION_SOURCE

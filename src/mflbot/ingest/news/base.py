@@ -12,7 +12,7 @@ the analysis engines, which weigh it against projections and league rules.
 from __future__ import annotations
 
 import abc
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 from ...domain.models import NewsItem
 

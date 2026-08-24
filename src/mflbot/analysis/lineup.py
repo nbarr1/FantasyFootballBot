@@ -20,9 +20,9 @@ currently submitted so the user is shown changes, not a wall of confirmations.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Iterable, Sequence
+from datetime import datetime
 
 from ..domain.models import LineupSlot, Player
 from ..errors import Missing

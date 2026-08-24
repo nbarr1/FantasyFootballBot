@@ -8,9 +8,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
-from mflbot.errors import PreconditionFailed
 from mflbot.execute.executor import Executor
 from mflbot.mfl.endpoints import Capability
 from mflbot.mfl.write_client import WriteResult
@@ -150,8 +147,8 @@ def test_expired_recommendation_is_never_submitted(repos, store) -> None:
 
 
 def test_lineup_past_lock_is_refused(repos, store, synthetic_settings) -> None:
-    from datetime import UTC, datetime, timedelta
     import dataclasses
+    from datetime import UTC, datetime, timedelta
 
     locked = dataclasses.replace(
         synthetic_settings,

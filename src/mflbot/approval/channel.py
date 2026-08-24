@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import abc
 import enum
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from ..recommend.models import ActionPayload, Recommendation
 from .token import ApprovalToken

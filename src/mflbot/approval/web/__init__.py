@@ -15,6 +15,6 @@ What is missing before this should be trusted with approvals:
 * Browser testing.
 """
 
-from .app import build_app, WebApprovalChannel
+from .app import WebApprovalChannel, build_app
 
 __all__ = ["build_app", "WebApprovalChannel"]

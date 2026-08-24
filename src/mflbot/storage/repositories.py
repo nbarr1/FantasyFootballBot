@@ -8,9 +8,10 @@ a second implementation of this class rather than rewriting the bot.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from ..domain.models import (
     Franchise,
@@ -21,7 +22,6 @@ from ..domain.models import (
     Projection,
     RosterEntry,
     Transaction,
-    WaiverSystem,
 )
 from ..errors import BlockedFeature
 from .db import Database, utc_now_iso

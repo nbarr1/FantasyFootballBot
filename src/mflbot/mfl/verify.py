@@ -34,7 +34,6 @@ from .endpoints import (
     LOCK_FILENAME,
     Capability,
     EndpointRegistry,
-    Provenance,
 )
 
 log = logging.getLogger(__name__)

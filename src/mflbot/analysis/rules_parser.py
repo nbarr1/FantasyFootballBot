@@ -23,8 +23,9 @@ confident, wrong advice, which is worse than no advice.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import Any
 
 PER_UNIT = "per_unit"
 FLAT = "flat"

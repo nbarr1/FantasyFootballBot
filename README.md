@@ -177,8 +177,9 @@ cadences. League data is never configured there; it comes from the API.
 
 The thresholds worth tuning first are in `[waivers]` and `[trades]`. They gate
 *how many* recommendations surface, and the shipped defaults are deliberately
-conservative — fewer suggestions, not better ones. See `config.example.toml`
-for what each one does.
+conservative — fewer suggestions, not better ones. `bot init` writes a fully
+commented template ([`src/mflbot/templates/config.example.toml`](src/mflbot/templates/config.example.toml))
+explaining what each one does.
 
 Secrets come from the environment only (see `.env.example`), are never stored in
 the database, never written to a log — every formatter routes through a

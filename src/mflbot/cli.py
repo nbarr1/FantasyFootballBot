@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from importlib import resources
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, load_config
@@ -33,7 +34,17 @@ from .context import BotContext
 from .errors import ApprovalError, MFLBotError
 from .logging_setup import setup_logging
 
-EXAMPLE_CONFIG = Path(__file__).resolve().parents[2] / "config.example.toml"
+#: The config template ships inside the package. Resolving it through
+#: importlib.resources rather than a path relative to __file__ is what makes
+#: `bot init` work for a real (non-editable) install -- which is how both the
+#: Dockerfile and the systemd deployment install it.
+CONFIG_TEMPLATE = "templates/config.example.toml"
+
+
+def read_config_template() -> str:
+    return resources.files("mflbot").joinpath(CONFIG_TEMPLATE).read_text(
+        encoding="utf-8"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -46,10 +57,12 @@ def cmd_init(args, context: BotContext | None = None) -> int:
     if target.exists() and not args.force:
         print(f"{target} already exists. Use --force to overwrite.")
         return 1
-    if not EXAMPLE_CONFIG.exists():
-        print(f"Missing template at {EXAMPLE_CONFIG}")
+    try:
+        template = read_config_template()
+    except (FileNotFoundError, ModuleNotFoundError) as exc:
+        print(f"Could not read the packaged config template: {exc}")
         return 1
-    target.write_text(EXAMPLE_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    target.write_text(template, encoding="utf-8")
     print(f"Wrote {target}. Edit the [league] section, then:")
     print("  1. export MFLBOT_MFL_USERNAME=... MFLBOT_MFL_PASSWORD=...")
     print("  2. bot verify-endpoints")

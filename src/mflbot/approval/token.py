@@ -83,7 +83,7 @@ class ApprovalToken:
 
 
 def _sign(secret: bytes, token_id: str, recommendation_id: str, payload_hash: str) -> str:
-    message = f"{token_id}|{recommendation_id}|{payload_hash}".encode("utf-8")
+    message = f"{token_id}|{recommendation_id}|{payload_hash}".encode()
     return hmac.new(secret, message, sha256).hexdigest()
 
 

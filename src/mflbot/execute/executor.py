@@ -25,7 +25,6 @@ from typing import Any
 
 from ..approval.token import ApprovalToken
 from ..errors import ApprovalError, PreconditionFailed, TransportError
-from ..mfl.endpoints import Capability
 from ..recommend.models import (
     AddDropPayload,
     LineupPayload,

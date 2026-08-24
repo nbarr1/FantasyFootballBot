@@ -17,16 +17,16 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Sequence
+from typing import Any
 
-from ..domain.models import Franchise, LeagueSettings, LineupSlot, WaiverSystem
-from ..errors import BlockedFeature, ParseError
 from ..analysis.rules_parser import (
     ParsedRules,
     mfl_text,
     parse_rule_definitions,
     parse_rules,
 )
+from ..domain.models import Franchise, LeagueSettings, LineupSlot, WaiverSystem
+from ..errors import BlockedFeature, ParseError
 
 log = logging.getLogger(__name__)
 
