@@ -226,8 +226,13 @@ daily refresh updates one object and every recommendation moves with it.
 ## Tests
 
 ```bash
-pytest              # 160 tests
+pytest              # 161 tests
 ```
+
+Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`
+silently puts the working directory on `sys.path`, so an import that only works
+by accident passes locally and fails in CI. CI runs the bare console script for
+exactly that reason.
 
 The ones that encode the safety properties: `test_write_isolation.py`,
 `test_approval.py`, `test_executor.py`, `test_no_seed_data.py`, and
