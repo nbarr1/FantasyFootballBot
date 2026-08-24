@@ -35,11 +35,14 @@ log = logging.getLogger(__name__)
 
 #: Payload fields a user may edit from the CLI. Deliberately narrow: league and
 #: franchise ids are identity, not preference, and editing them would turn an
-#: approved action into one aimed at a different team.
+#: approved action into one aimed at a different team. ``expires_at`` is left
+#: out too, but for a different reason: it is a ``datetime`` and _coerce()
+#: below has no datetime-parsing branch, so accepting raw text for it would
+#: silently persist the wrong type rather than a real timestamp.
 EDITABLE_FIELDS = {
-    "add_player_id", "drop_player_id", "bid_amount", "starter_ids", "week",
-    "to_franchise_id", "gives_player_ids", "receives_player_ids", "message",
-    "accept", "expires_days",
+    "add_player_id", "drop_player_id", "bid_amount", "round", "starter_ids",
+    "week", "to_franchise_id", "gives_player_ids", "receives_player_ids",
+    "message", "response",
 }
 
 

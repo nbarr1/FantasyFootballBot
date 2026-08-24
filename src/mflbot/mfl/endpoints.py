@@ -10,8 +10,11 @@ be treated as confirmed simply because it is written down.
 Each endpoint therefore carries a :class:`Provenance`:
 
 ``DOC_VERIFIED``
-    Reconciled against the live ``api_info`` page by ``bot verify-endpoints``
-    and pinned in ``endpoints.lock.json``.
+    Confirmed against MFL's own documentation -- either fetched live and
+    reconciled by ``bot verify-endpoints`` into ``endpoints.lock.json``, or (as
+    happened for most of the entries below) hand-verified against the
+    documentation's own text when it was made available directly, which is
+    just as authoritative a source.
 ``THIRD_PARTY_CLIENT``
     Taken from an independently written, working open-source MFL client and
     corroborated by a second source. Good enough for *reads*: a wrong name
@@ -145,78 +148,91 @@ _HOUR = 3_600
 READ_ENDPOINTS: dict[str, ReadEndpoint] = {
     e.type_name: e
     for e in (
-        # -- configuration -------------------------------------------------
-        ReadEndpoint("league", ("L", "FRANCHISE_ID", "PASSWORD"), Provenance.THIRD_PARTY_CLIENT,
-                     _SIX_HOURS, "League settings: roster limits, lineup slots, divisions, "
+        # -- configuration ---------------------------------------------
+        # DOC_VERIFIED entries below are confirmed against MFL's own Request
+        # Reference Page (pasted into the conversation that built this bot),
+        # not merely a third-party client -- see the Provenance docstring.
+        ReadEndpoint("league", ("L",), Provenance.DOC_VERIFIED, _SIX_HOURS,
+                     "League settings: roster limits, lineup slots, divisions, "
                      "waiver system, trade deadline, IR/taxi rules."),
-        ReadEndpoint("rules", ("L",), Provenance.THIRD_PARTY_CLIENT, _SIX_HOURS,
+        ReadEndpoint("rules", ("L",), Provenance.DOC_VERIFIED, _SIX_HOURS,
                      "This league's scoring rules. Sole source of truth for scoring."),
-        ReadEndpoint("allRules", (), Provenance.THIRD_PARTY_CLIENT, _DAY,
+        ReadEndpoint("allRules", (), Provenance.DOC_VERIFIED, _DAY,
                      "Catalogue of every scoring-event abbreviation MFL supports, with "
                      "descriptions. Used to resolve event codes without hardcoding them."),
         # -- player universe ----------------------------------------------
-        ReadEndpoint("players", ("DETAILS", "SINCE", "PLAYERS"), Provenance.THIRD_PARTY_CLIENT,
+        # players also accepts an optional L, which this bot never passes (it
+        # asks for the whole database, not one league's context on it); left
+        # out of the declared params so the api-host routing rule (no L
+        # declared -> api host) keeps matching what this bot actually sends.
+        ReadEndpoint("players", ("DETAILS", "SINCE", "PLAYERS"), Provenance.DOC_VERIFIED,
                      _DAY, "Full player database. MFL asks that this be fetched at most "
                      "once per day."),
-        ReadEndpoint("playerProfile", ("P",), Provenance.THIRD_PARTY_CLIENT, _DAY,
+        ReadEndpoint("playerProfile", ("P",), Provenance.DOC_VERIFIED, _DAY,
                      "Per-player biographical detail."),
-        ReadEndpoint("playerStatus", ("L", "P"), Provenance.THIRD_PARTY_CLIENT, _HOUR,
-                     "Whether a player is rostered, free agent, or on waivers."),
+        ReadEndpoint("playerRosterStatus", ("L", "P", "W", "F"), Provenance.DOC_VERIFIED,
+                     _HOUR, "Whether a player is rostered, free agent, or on waivers."),
         # -- league state --------------------------------------------------
-        ReadEndpoint("rosters", ("L", "FRANCHISE"), Provenance.THIRD_PARTY_CLIENT, _HOUR,
+        ReadEndpoint("rosters", ("L", "FRANCHISE", "W"), Provenance.DOC_VERIFIED, _HOUR,
                      "All franchise rosters.", requires_auth=True),
-        ReadEndpoint("freeAgents", ("L", "POSITION"), Provenance.THIRD_PARTY_CLIENT, _HOUR,
+        ReadEndpoint("freeAgents", ("L", "POSITION"), Provenance.DOC_VERIFIED, _HOUR,
                      "Available player pool."),
-        ReadEndpoint("transactions", ("L", "TRANS_TYPE", "FRANCHISE", "DAYS", "COUNT"),
-                     Provenance.THIRD_PARTY_CLIENT, 900,
+        ReadEndpoint("transactions", ("L", "W", "TRANS_TYPE", "FRANCHISE", "DAYS", "COUNT"),
+                     Provenance.DOC_VERIFIED, 900,
                      "League-wide transaction log; also the change-detection feed."),
-        ReadEndpoint("leagueStandings", ("L",), Provenance.THIRD_PARTY_CLIENT, _HOUR,
-                     "Current standings."),
-        ReadEndpoint("assets", ("L",), Provenance.THIRD_PARTY_CLIENT, _HOUR,
+        ReadEndpoint("leagueStandings", ("L", "COLUMN_NAMES", "ALL", "WEB"),
+                     Provenance.DOC_VERIFIED, _HOUR, "Current standings."),
+        ReadEndpoint("assets", ("L",), Provenance.DOC_VERIFIED, _HOUR,
                      "Every franchise's tradable assets (players and draft picks)."),
-        ReadEndpoint("salaryAdjustments", ("L",), Provenance.THIRD_PARTY_CLIENT, _SIX_HOURS,
+        ReadEndpoint("salaryAdjustments", ("L",), Provenance.DOC_VERIFIED, _SIX_HOURS,
                      "Salary cap adjustments, where the league uses a cap."),
-        ReadEndpoint("accounting", ("L",), Provenance.THIRD_PARTY_CLIENT, _SIX_HOURS,
+        ReadEndpoint("accounting", ("L",), Provenance.DOC_VERIFIED, _SIX_HOURS,
                      "League accounting records."),
-        ReadEndpoint("calendar", ("L",), Provenance.THIRD_PARTY_CLIENT, _SIX_HOURS,
+        ReadEndpoint("calendar", ("L",), Provenance.DOC_VERIFIED, _SIX_HOURS,
                      "League calendar events."),
         # -- scoring -------------------------------------------------------
-        ReadEndpoint("playerScores", ("L", "W", "PLAYERS", "COUNT", "POSITION", "STATUS"),
-                     Provenance.THIRD_PARTY_CLIENT, _HOUR,
+        ReadEndpoint("playerScores", ("L", "W", "YEAR", "PLAYERS", "POSITION", "STATUS",
+                                      "RULES", "COUNT"),
+                     Provenance.DOC_VERIFIED, _HOUR,
                      "Actual fantasy points under this league's scoring."),
-        ReadEndpoint("weeklyResults", ("L", "W"), Provenance.THIRD_PARTY_CLIENT, _HOUR,
-                     "Weekly head-to-head results."),
-        ReadEndpoint("liveScoring", ("L", "W", "DETAILS"), Provenance.THIRD_PARTY_CLIENT, 300,
+        ReadEndpoint("weeklyResults", ("L", "W", "MISSING_AS_BYE"), Provenance.DOC_VERIFIED,
+                     _HOUR, "Weekly head-to-head results."),
+        ReadEndpoint("liveScoring", ("L", "W", "DETAILS"), Provenance.DOC_VERIFIED, 300,
                      "In-progress scoring. Only polled inside game windows."),
-        ReadEndpoint("projectedScores", ("L", "PLAYERS", "W", "COUNT", "POSITION", "STATUS"),
-                     Provenance.THIRD_PARTY_CLIENT, _SIX_HOURS,
+        ReadEndpoint("projectedScores", ("L", "W", "PLAYERS", "POSITION", "STATUS", "COUNT"),
+                     Provenance.DOC_VERIFIED, _SIX_HOURS,
                      "MFL's own projections, where populated for this league's host."),
-        ReadEndpoint("pointsAllowed", ("L",), Provenance.THIRD_PARTY_CLIENT, _SIX_HOURS,
+        ReadEndpoint("pointsAllowed", ("L",), Provenance.DOC_VERIFIED, _SIX_HOURS,
                      "Points allowed by NFL defence, by position."),
         # -- context -------------------------------------------------------
-        ReadEndpoint("injuries", ("W",), Provenance.THIRD_PARTY_CLIENT, 1800,
+        ReadEndpoint("injuries", ("W",), Provenance.DOC_VERIFIED, 1800,
                      "Official NFL injury designations. The always-on news baseline."),
-        ReadEndpoint("nflSchedule", ("W",), Provenance.THIRD_PARTY_CLIENT, _DAY,
+        ReadEndpoint("nflSchedule", ("W",), Provenance.DOC_VERIFIED, _DAY,
                      "NFL game schedule and kickoff times; drives game-window polling "
                      "and late-game lock risk."),
         # -- market signal -------------------------------------------------
-        ReadEndpoint("adp", ("FRANCHISES", "IS_MOCK", "IS_PPR", "IS_KEEPER", "TIME", "DAYS"),
-                     Provenance.THIRD_PARTY_CLIENT, _DAY, "Average draft position."),
-        ReadEndpoint("aav", ("FRANCHISES",), Provenance.THIRD_PARTY_CLIENT, _DAY,
+        # NOTE: FRANCHISES/TIME/DAYS on the previous adp/aav entries were not
+        # real MFL parameters (inherited from an unverified third-party
+        # client); PERIOD/FCOUNT/CUTOFF/DETAILS are the real ones, along with
+        # topAdds/Drops/Owns/Starters never having taken W at all -- COUNT and
+        # STATUS are their only real filters.
+        ReadEndpoint("adp", ("PERIOD", "FCOUNT", "IS_PPR", "IS_KEEPER", "IS_MOCK", "CUTOFF",
+                             "DETAILS"),
+                     Provenance.DOC_VERIFIED, _DAY, "Average draft position."),
+        ReadEndpoint("aav", ("PERIOD", "IS_PPR", "IS_KEEPER"), Provenance.DOC_VERIFIED, _DAY,
                      "Average auction value."),
-        ReadEndpoint("topAdds", ("W",), Provenance.THIRD_PARTY_CLIENT, _HOUR,
+        ReadEndpoint("topAdds", ("COUNT", "STATUS"), Provenance.DOC_VERIFIED, _HOUR,
                      "Most-added players across MFL. A market interest signal."),
-        ReadEndpoint("topDrops", ("W",), Provenance.THIRD_PARTY_CLIENT, _HOUR, "Most-dropped."),
-        ReadEndpoint("topOwns", ("W",), Provenance.THIRD_PARTY_CLIENT, _HOUR, "Most-owned."),
-        ReadEndpoint("topStarters", ("W",), Provenance.THIRD_PARTY_CLIENT, _HOUR,
+        ReadEndpoint("topDrops", ("COUNT", "STATUS"), Provenance.DOC_VERIFIED, _HOUR,
+                     "Most-dropped."),
+        ReadEndpoint("topOwns", ("COUNT", "STATUS"), Provenance.DOC_VERIFIED, _HOUR,
+                     "Most-owned."),
+        ReadEndpoint("topStarters", ("COUNT", "STATUS"), Provenance.DOC_VERIFIED, _HOUR,
                      "Most-started."),
         # -- trade context -------------------------------------------------
-        ReadEndpoint("tradeBait", ("L",), Provenance.THIRD_PARTY_CLIENT, _HOUR,
-                     "What each franchise has advertised as available."),
-        # NOTE: pending trades are franchise-scoped and authenticated. The exact
-        # TYPE name is not corroborated by an independent client, so it is left
-        # UNVERIFIED and resolved by `bot verify-endpoints` alongside the writes.
-        ReadEndpoint("pendingTrades", ("L", "FRANCHISE"), Provenance.UNVERIFIED, 900,
+        ReadEndpoint("tradeBait", ("L", "INCLUDE_DRAFT_PICKS"), Provenance.DOC_VERIFIED,
+                     _HOUR, "What each franchise has advertised as available."),
+        ReadEndpoint("pendingTrades", ("L", "FRANCHISE_ID"), Provenance.DOC_VERIFIED, 900,
                      "Trade offers awaiting a response.", requires_auth=True),
     )
 }
@@ -235,6 +251,11 @@ UNVERIFIED_READS: tuple[str, ...] = tuple(
 WRITE_ENDPOINTS: dict[Capability, WriteEndpoint] = {
     w.capability: w
     for w in (
+        # Candidates below are the real, confirmed names -- see
+        # endpoints.lock.json for the pinned, DOC_VERIFIED entries that
+        # actually govern whether these fire. The candidates matter only if
+        # the lock file is ever deleted and `bot verify-endpoints` re-derives
+        # them from a live fetch.
         WriteEndpoint(
             Capability.SUBMIT_LINEUP,
             candidates=("lineup",),
@@ -242,28 +263,28 @@ WRITE_ENDPOINTS: dict[Capability, WriteEndpoint] = {
         ),
         WriteEndpoint(
             Capability.ADD_DROP_FCFS,
-            candidates=("import_transaction", "transaction", "addDrop", "freeAgent"),
+            candidates=("fcfsWaiver",),
             description="Immediate free-agent add and/or drop in a first-come "
                         "first-served league.",
         ),
         WriteEndpoint(
             Capability.WAIVER_CLAIM_ORDER,
-            candidates=("waiverRequest", "waiverOrder", "import_transaction"),
+            candidates=("waiverRequest",),
             description="Place a waiver claim in a waiver-order league.",
         ),
         WriteEndpoint(
             Capability.WAIVER_CLAIM_BBID,
-            candidates=("bbidWaiverRequest", "bbid_waiver_request", "import_transaction"),
+            candidates=("blindBidWaiverRequest",),
             description="Place a blind-bid waiver claim with a bid amount.",
         ),
         WriteEndpoint(
             Capability.PROPOSE_TRADE,
-            candidates=("tradeProposal", "proposeTrade", "import_transaction"),
+            candidates=("tradeProposal",),
             description="Offer a trade to another franchise.",
         ),
         WriteEndpoint(
             Capability.RESPOND_TO_TRADE,
-            candidates=("tradeResponse", "respondToTrade", "import_transaction"),
+            candidates=("tradeResponse",),
             description="Accept or reject a received trade offer.",
         ),
     )

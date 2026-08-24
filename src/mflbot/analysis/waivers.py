@@ -141,6 +141,23 @@ def analyse_waivers(
         return [], blocks
     if settings.waiver_system == WaiverSystem.NONE:
         return [], blocks
+    if settings.waiver_system == WaiverSystem.WAIVER_ORDER:
+        blocks.append(
+            BlockedFeature(
+                feature="waivers",
+                reason="this league uses waiver-order claims, which this bot cannot "
+                       "yet prepare",
+                gaps=(
+                    "MFL's waiverRequest import requires a ROUND number, and this "
+                    "bot has no source of truth for which round a league is "
+                    "currently processing or how many rounds it runs per period",
+                ),
+                remedy="Not implemented yet. FCFS and blind-bid leagues are fully "
+                       "supported; waiver-order support needs round-tracking added "
+                       "first, rather than a guessed round number.",
+            )
+        )
+        return [], blocks
 
     roster_values = value_players(roster, projections, week, remaining_weeks)
     fa_values = value_players(free_agents, projections, week, remaining_weeks)

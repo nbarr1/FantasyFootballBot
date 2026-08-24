@@ -141,7 +141,7 @@ def test_accept_verdict_produces_an_approvable_action(synthetic_settings) -> Non
         assessment, synthetic_settings, "0001"
     )
     assert recommendation is not None
-    assert recommendation.payload.accept is True
+    assert recommendation.payload.response == "accept"
     assert recommendation.payload.offer_id == "offer-7"
 
 

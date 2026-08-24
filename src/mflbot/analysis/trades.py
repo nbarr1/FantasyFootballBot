@@ -426,7 +426,7 @@ def build_response_recommendation(
             league_id=settings.league_id,
             franchise_id=franchise_id,
             offer_id=assessment.offer_id,
-            accept=(assessment.verdict == "accept"),
+            response=assessment.verdict,
         ),
         rationale="\n".join(
             [

@@ -27,44 +27,46 @@ that a future change cannot quietly undo it:
 | Editing revokes approval | An edit changes the payload hash, so a token issued before the edit no longer matches. |
 | Approval is single-use | Consumption is one atomic `UPDATE ... WHERE consumed_at IS NULL`; two racing executors produce exactly one winner. |
 | Silence never executes | Recommendations expire. Expiry is the only terminal state that inaction can produce. |
-| A guessed endpoint never fires | Write endpoints ship **inert**. See "Why writes start disabled" below. |
+| A guessed endpoint never fires | A write capability without a `DOC_VERIFIED` entry refuses outright -- no default, no fallback. See "Endpoint verification" below for which capabilities that currently is (five of six) and isn't (waiver-order claims). |
 | The world may have moved | The executor re-validates preconditions immediately before submitting, and abandons rather than adapting if state changed. |
 | Nothing is assumed to have worked | Success is confirmed by re-reading the relevant export, not by trusting MFL's response. |
 
 Run `pytest tests/test_write_isolation.py tests/test_approval.py` to see these
 checked.
 
-## Why writes start disabled
+## Endpoint verification
 
 MFL's own API documentation is the authoritative source for endpoint names and
-parameters. **It was not reachable from the machine that generated this code**
-(the whole `myfantasyleague.com` domain was blocked by network policy), so the
-`import` endpoint names could not be confirmed.
+parameters. The whole `myfantasyleague.com` domain was blocked by network
+policy on the machine that built this bot, so nothing could be confirmed by
+fetching it directly — write endpoints shipped `UNVERIFIED` and refused to
+fire until they were.
 
-The user later pasted MFL's general developer-program overview page into the
-conversation, which confirmed several protocol-level facts directly in the code
-(the login flow and cookie name, that a request with no league parameter must
-go to the `api` host, that the `APIKEY` alternate-auth path never works for
-imports, franchise/player id formatting, client registration and rate-limit
-behaviour) — but it is the overview page, not the per-command Request Reference
-Page, so it still does not name any `import?TYPE=...` value. Those remain
-unconfirmed.
+They now are: the user pasted MFL's own Request Reference Page directly into
+the conversation, and `endpoints.lock.json` — committed to this repo, not a
+generated artifact you need to produce yourself — pins the real, confirmed
+`import?TYPE=...` name and parameter mapping for all six write capabilities:
+lineup submission, FCFS add/drop, blind-bid waivers, trade proposals, and
+trade responses all work. **Waiver-order claims are the one exception**: MFL's
+`waiverRequest` import requires a `ROUND` number, and this bot has no way to
+determine which round a league is processing or how many it runs per period —
+rather than guess, `analyse_waivers` blocks that one waiver system outright
+(`bot config-summary` will say so plainly if your league uses it). FCFS and
+blind-bid leagues are unaffected.
 
-Rather than ship a plausible guess and POST it at a real league, every write
-capability ships as `UNVERIFIED` and refuses to fire. Running:
-
-```bash
-bot verify-endpoints
-```
-
-fetches your league's `api_info` page, extracts the endpoints MFL actually
-documents, and pins the confirmed names and parameters into
-`endpoints.lock.json`. Only capabilities it can confirm become usable.
+If you ever need to re-verify against a different league or season (or MFL
+changes something), `bot verify-endpoints` re-fetches the live `api_info` page
+and regenerates the lock file the same way; it only overwrites entries it can
+actually confirm.
 
 Read endpoints are less dangerous — a wrong name fails loudly with no side
-effect — so they ship enabled, sourced from an independently written,
-working open-source MFL client and cross-checked against a second source.
-Each one records its provenance in `mflbot/mfl/endpoints.py`.
+effect — so they shipped enabled from an independently written third-party
+client from the start. Cross-checking that against the real Request Reference
+Page found it wasn't perfect: a handful of endpoints (`adp`, `aav`, the
+`top*` market-signal ones, and one that wasn't real at all — `playerStatus`,
+now the actual `playerRosterStatus`) had parameter names that don't exist in
+MFL's own docs. All of it is now hand-verified against the real reference and
+corrected. Each endpoint records its provenance in `mflbot/mfl/endpoints.py`.
 
 ## No fabricated data, anywhere
 
@@ -117,7 +119,6 @@ export MFLBOT_MFL_API_KEY=...       # optional; unlocks private-league reads
 # somewhere it shouldn't, MFL will invalidate and reissue an API key on
 # request; change your password the normal way for the other two.
 
-bot verify-endpoints           # required before writes will ever fire
 bot sync-config                # pull league settings + scoring rules
 bot whoami                     # find your franchise id
 $EDITOR config.toml            # set league.franchise_id
@@ -239,9 +240,10 @@ daily refresh updates one object and every recommendation moves with it.
 
 ## Known gaps
 
-- **Write endpoints are unverified** until you run `bot verify-endpoints`. Some
-  may need a `field_map` completed by hand in `endpoints.lock.json`; the command
-  tells you which and shows the documented parameters.
+- **Waiver-order leagues are blocked.** MFL's `waiverRequest` import requires a
+  `ROUND` number this bot has no way to determine automatically; rather than
+  guess, the whole waiver system stays blocked for leagues that use it. FCFS
+  and blind-bid leagues are fully supported. See "Endpoint verification" above.
 - **The web dashboard is a scaffold.** It runs, but has no CSRF protection and no
   auth beyond binding to localhost. The CLI is the supported approval surface.
 - **`bot validate-scoring` is partial.** A full replay needs per-player stat
@@ -252,13 +254,6 @@ daily refresh updates one object and every recommendation moves with it.
   full replay needs a stat-line source from one of the paid providers stubbed
   in `mflbot/ingest/news/paid_stubs.py` — MFL's own docs name FantasyData.com,
   Sportradar and XML Team as the sanctioned options.
-- **Whether any write needs XML `DATA` instead of flat parameters is still
-  open.** MFL's docs mention that some imports take an XML blob in a `DATA`
-  field rather than plain key=value parameters, without saying which. None of
-  this bot's six write capabilities are confirmed either way — that lives on
-  the per-command Request Reference Page, not the general API overview.
-  `bot verify-endpoints` should surface this once it can read that page; until
-  then `MFLWriteClient._build_params` sends flat parameters and says so.
 - **Draft picks are not valued** in trade analysis, and are flagged as excluded
   when an offer contains them.
 - **Email and Telegram notifiers are stubs**, as are the paid news providers.
@@ -267,7 +262,7 @@ daily refresh updates one object and every recommendation moves with it.
 ## Tests
 
 ```bash
-pytest              # 165 tests
+pytest              # 176 tests
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`

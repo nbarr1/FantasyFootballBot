@@ -39,6 +39,11 @@ docker run --rm -v "$PWD/deploy/state:/data" -w /data \
   "$(docker build -q .)" init
 $EDITOR deploy/state/config.toml
 
+# The container's working directory is the mounted volume above, not the repo
+# checkout -- copy the repo's committed, hand-verified endpoints.lock.json in
+# alongside config.toml, or every write capability starts UNVERIFIED again.
+cp endpoints.lock.json deploy/state/
+
 cat > deploy/.env <<'EOF'
 MFLBOT_MFL_USERNAME=...
 MFLBOT_MFL_PASSWORD=...

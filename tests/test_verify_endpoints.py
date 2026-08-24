@@ -39,10 +39,15 @@ def test_single_letter_parameters_are_detected() -> None:
 
 
 def test_obvious_parameters_map_automatically_and_the_rest_are_reported() -> None:
+    # franchise_id is deliberately not among LineupPayload's transmitted
+    # fields: MFL's docs describe FRANCHISE_ID as a commissioner-only
+    # impersonation override, and this bot's own identity comes from the
+    # session cookie, so there is nothing here for FRANCHISE to auto-map to.
     _, imports = parse_api_info(SYNTHETIC_DOCS)
     fields = LineupPayload.transmitted_fields()
+    assert "franchise_id" not in fields
     mapping = _auto_field_map(fields, imports["lineup"].params)
-    assert mapping == {"league_id": "L", "week": "W", "franchise_id": "FRANCHISE"}
+    assert mapping == {"league_id": "L", "week": "W"}
     assert [f for f in fields if f not in mapping] == ["starter_ids"]
 
 

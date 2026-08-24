@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 import httpx
 
@@ -87,10 +88,15 @@ class MFLWriteClient:
 
         1. The endpoint must be verified against MFL's documentation.
         2. The session must be write-capable.
-        3. The token must verify against *this* payload and be spent.
-        4. Only then is a request built and sent.
+        3. The request must be fully buildable -- the payload has everything
+           its wire format needs (a bid amount, a waiver round, whatever the
+           capability requires).
+        4. Only then is the token verified against *this* payload and spent.
+        5. Only then is the request actually sent.
 
-        Any failure before step 4 means nothing was sent.
+        Step 3 comes before step 4 deliberately: a payload that fails to build
+        must never consume a real approval for a request that was never sent.
+        Any failure before step 5 means nothing was sent.
         """
         capability = payload.capability
         endpoint = self.registry.write(capability)
@@ -98,7 +104,13 @@ class MFLWriteClient:
 
         self.auth.require_writable(f"submitting {capability}")
 
-        unmapped = endpoint.missing_field_mappings(payload.transmitted_fields())
+        # Build the request now, before touching the token. wire_fields() can
+        # raise PayloadIncomplete (a blind-bid claim with no bid amount, a
+        # waiver-order claim with no round) -- that must surface here, not
+        # after the approval has been spent, or an incomplete payload burns a
+        # real approval for a request that was never actually sent.
+        wire = payload.wire_fields()
+        unmapped = endpoint.missing_field_mappings(tuple(wire))
         if unmapped:
             raise EndpointNotVerifiedError(
                 f"Write capability '{capability}' has no verified request-parameter "
@@ -107,12 +119,12 @@ class MFLWriteClient:
                 f"(run `bot verify-endpoints` to regenerate the template).\n"
                 f"  Nothing was submitted."
             )
+        params = self._params_from_wire(wire, endpoint)
 
         # Consume the approval. This both authorises and, by spending the token,
         # guarantees the same approval cannot drive a second submission.
         self.tokens.consume(token, payload_hash(payload.to_dict()))
 
-        params = self._build_params(payload, endpoint)
         summary = f"import?TYPE={endpoint_type}&" + "&".join(
             f"{k}={v}" for k, v in sorted(params.items()) if k != "TYPE"
         )
@@ -154,33 +166,32 @@ class MFLWriteClient:
             succeeded=succeeded,
         )
 
-    def _build_params(self, payload: ActionPayload, endpoint) -> dict[str, str]:
-        """Translate payload fields into MFL request parameters.
+    def _params_from_wire(self, wire: dict, endpoint) -> dict[str, str]:
+        """Translate a payload's wire fields into MFL request parameters.
 
         Uses only the verified ``field_map``; there is no fallback that guesses
-        a parameter name from a field name.
+        a parameter name from a field name. ``wire`` is the output of
+        :meth:`~mflbot.recommend.models.ActionPayload.wire_fields` -- already
+        shaped for this specific capability, not the raw dataclass fields (see
+        that method for why the two can differ).
 
-        Open question, not yet resolved: MFL's docs note that "some import
-        requests require you to pass in an XML representation of the data
-        being uploaded, via a field called 'DATA'" rather than flat key=value
-        parameters. Nothing seen so far confirms whether that applies to any of
-        this bot's six write capabilities specifically -- that detail lives on
-        the per-command Request Reference Page, not the general overview. If
-        ``bot verify-endpoints`` (or a manually supplied Request Reference
-        excerpt) turns up a DATA-based import among them, this method needs a
-        second code path that serialises the payload as XML into a single
-        ``DATA`` field instead of flat params; do not guess at that shape.
+        The DATA/XML question this docstring used to flag as open is resolved:
+        MFL's Request Reference Page confirms all six of this bot's write
+        capabilities take flat key=value parameters, not an XML DATA blob
+        (that format is used elsewhere -- draftResults, auctionResults,
+        salaries -- none of which this bot writes to).
         """
-        data = payload.to_dict()
         params: dict[str, str] = {"TYPE": endpoint.type_name}
         for field_name, param_name in endpoint.field_map.items():
-            value = data.get(field_name)
+            value = wire.get(field_name)
             if value is None:
                 continue
             if isinstance(value, (list, tuple)):
                 params[param_name] = ",".join(str(v) for v in value)
             elif isinstance(value, bool):
                 params[param_name] = "1" if value else "0"
+            elif isinstance(value, datetime):
+                params[param_name] = str(int(value.timestamp()))
             else:
                 params[param_name] = str(value)
         return params

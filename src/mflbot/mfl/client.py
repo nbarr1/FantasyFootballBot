@@ -25,7 +25,7 @@ from ..config import LeagueRef
 from ..errors import AuthError, ParseError, TransportError
 from .auth import AuthState, Credentials, parse_login_response, redact
 from .cache import ResponseCache, cache_key
-from .endpoints import EndpointRegistry, Provenance
+from .endpoints import EndpointRegistry
 from .ratelimit import RateLimiter, RateLimitPolicy
 
 log = logging.getLogger(__name__)
@@ -342,22 +342,11 @@ class MFLReadClient:
         return self.export("adp", **kw).payload
 
     def pending_trades(self, franchise: str | None = None, **kw: Any) -> Any:
-        """Trade offers awaiting a response.
-
-        The TYPE name for this endpoint is not independently corroborated; it is
-        marked UNVERIFIED in the registry and confirmed by
-        ``bot verify-endpoints``. A wrong name here fails loudly on a read,
-        which is why it is allowed to ship unverified while writes are not.
-        """
-        endpoint = self.registry.read("pendingTrades")
-        if endpoint.provenance is Provenance.UNVERIFIED:
-            log.debug(
-                "pendingTrades endpoint name is unverified; run 'bot verify-endpoints'"
-            )
+        """Trade offers awaiting a response."""
         return self.export(
             "pendingTrades",
             L=self.league.id,
-            FRANCHISE=franchise or self.league.franchise_id,
+            FRANCHISE_ID=franchise or self.league.franchise_id,
             **kw,
         ).payload
 
