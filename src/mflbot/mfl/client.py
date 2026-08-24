@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,12 +25,23 @@ from ..config import LeagueRef
 from ..errors import AuthError, ParseError, TransportError
 from .auth import AuthState, Credentials, parse_login_response, redact
 from .cache import ResponseCache, cache_key
-from .endpoints import EndpointRegistry, Provenance
+from .endpoints import EndpointRegistry
 from .ratelimit import RateLimiter, RateLimitPolicy
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = "mflbot/0.1 (personal league assistant; contact via MFL account owner)"
+DEFAULT_USER_AGENT = "mflbot/0.1 (personal league assistant; contact via MFL account owner)"
+#: Registering a client (MFL's API Client Registration page, plus SMS
+#: validation) raises the request-rate ceiling roughly 2.5x over an
+#: unregistered client -- but only when every request carries the exact
+#: User-Agent string chosen at registration. Set this to use that string once
+#: registered; the default below is unregistered and gets the lower, still
+#: fully-functional, tier.
+ENV_USER_AGENT = "MFLBOT_USER_AGENT"
+
+
+def resolve_user_agent() -> str:
+    return os.environ.get(ENV_USER_AGENT) or DEFAULT_USER_AGENT
 
 
 def unwrap(payload: Any, *keys: str) -> Any:
@@ -92,7 +104,7 @@ class MFLReadClient:
         self.auth = AuthState(credentials or Credentials.from_env())
         self._client = transport or httpx.Client(
             timeout=httpx.Timeout(30.0),
-            headers={"User-Agent": USER_AGENT},
+            headers={"User-Agent": resolve_user_agent()},
             follow_redirects=True,
         )
         self._owns_transport = transport is None
@@ -128,7 +140,10 @@ class MFLReadClient:
         creds = self.auth.credentials
         if not creds.has_login:
             return False
-        url = f"{self.league.base_url}/login"
+        # Login takes no league parameter, and MFL's own documented example
+        # calls it against the api host (api.myfantasyleague.com/{year}/login),
+        # not a league-specific one.
+        url = f"{self.league.global_base_url}/login"
         params = {"USERNAME": creds.username, "PASSWORD": creds.password, "XML": "1"}
         self.rate_limiter.acquire()
         try:
@@ -184,8 +199,14 @@ class MFLReadClient:
                 return MFLResponse(type_name, cached.payload, True, cached.age_seconds)
 
         request_params.update(self.auth.request_params())
+        # MFL requires (and recommends, for load-spreading) that requests with
+        # no league parameter go to the api host rather than a league-specific
+        # one; see LeagueRef.global_base_url.
+        base_url = (
+            self.league.base_url if endpoint.is_league_scoped else self.league.global_base_url
+        )
         payload = self._request_with_retries(
-            f"{self.league.base_url}/export", request_params, type_name
+            f"{base_url}/export", request_params, type_name
         )
         self.cache.put(key, payload, endpoint.ttl_seconds)
         return MFLResponse(type_name, payload, False, 0.0)
@@ -321,22 +342,11 @@ class MFLReadClient:
         return self.export("adp", **kw).payload
 
     def pending_trades(self, franchise: str | None = None, **kw: Any) -> Any:
-        """Trade offers awaiting a response.
-
-        The TYPE name for this endpoint is not independently corroborated; it is
-        marked UNVERIFIED in the registry and confirmed by
-        ``bot verify-endpoints``. A wrong name here fails loudly on a read,
-        which is why it is allowed to ship unverified while writes are not.
-        """
-        endpoint = self.registry.read("pendingTrades")
-        if endpoint.provenance is Provenance.UNVERIFIED:
-            log.debug(
-                "pendingTrades endpoint name is unverified; run 'bot verify-endpoints'"
-            )
+        """Trade offers awaiting a response."""
         return self.export(
             "pendingTrades",
             L=self.league.id,
-            FRANCHISE=franchise or self.league.franchise_id,
+            FRANCHISE_ID=franchise or self.league.franchise_id,
             **kw,
         ).payload
 

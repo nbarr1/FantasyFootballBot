@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 import httpx
 
@@ -23,6 +24,7 @@ from ..config import LeagueRef
 from ..errors import EndpointNotVerifiedError, TransportError
 from ..recommend.models import ActionPayload, payload_hash
 from .auth import AuthState, redact
+from .client import resolve_user_agent
 from .endpoints import Capability, EndpointRegistry
 from .ratelimit import RateLimiter, RateLimitPolicy
 
@@ -62,7 +64,7 @@ class MFLWriteClient:
         self.rate_limiter = rate_limiter or RateLimiter(RateLimitPolicy())
         self._client = transport or httpx.Client(
             timeout=httpx.Timeout(30.0),
-            headers={"User-Agent": "mflbot/0.1"},
+            headers={"User-Agent": resolve_user_agent()},
             follow_redirects=True,
         )
         self._owns_transport = transport is None
@@ -86,10 +88,15 @@ class MFLWriteClient:
 
         1. The endpoint must be verified against MFL's documentation.
         2. The session must be write-capable.
-        3. The token must verify against *this* payload and be spent.
-        4. Only then is a request built and sent.
+        3. The request must be fully buildable -- the payload has everything
+           its wire format needs (a bid amount, a waiver round, whatever the
+           capability requires).
+        4. Only then is the token verified against *this* payload and spent.
+        5. Only then is the request actually sent.
 
-        Any failure before step 4 means nothing was sent.
+        Step 3 comes before step 4 deliberately: a payload that fails to build
+        must never consume a real approval for a request that was never sent.
+        Any failure before step 5 means nothing was sent.
         """
         capability = payload.capability
         endpoint = self.registry.write(capability)
@@ -97,7 +104,13 @@ class MFLWriteClient:
 
         self.auth.require_writable(f"submitting {capability}")
 
-        unmapped = endpoint.missing_field_mappings(payload.transmitted_fields())
+        # Build the request now, before touching the token. wire_fields() can
+        # raise PayloadIncomplete (a blind-bid claim with no bid amount, a
+        # waiver-order claim with no round) -- that must surface here, not
+        # after the approval has been spent, or an incomplete payload burns a
+        # real approval for a request that was never actually sent.
+        wire = payload.wire_fields()
+        unmapped = endpoint.missing_field_mappings(tuple(wire))
         if unmapped:
             raise EndpointNotVerifiedError(
                 f"Write capability '{capability}' has no verified request-parameter "
@@ -106,12 +119,12 @@ class MFLWriteClient:
                 f"(run `bot verify-endpoints` to regenerate the template).\n"
                 f"  Nothing was submitted."
             )
+        params = self._params_from_wire(wire, endpoint)
 
         # Consume the approval. This both authorises and, by spending the token,
         # guarantees the same approval cannot drive a second submission.
         self.tokens.consume(token, payload_hash(payload.to_dict()))
 
-        params = self._build_params(payload, endpoint)
         summary = f"import?TYPE={endpoint_type}&" + "&".join(
             f"{k}={v}" for k, v in sorted(params.items()) if k != "TYPE"
         )
@@ -119,9 +132,15 @@ class MFLWriteClient:
         self.rate_limiter.acquire()
         url = f"{self.league.base_url}/import"
         try:
+            # No APIKEY here, deliberately: MFL's docs state the API key
+            # alternate-auth path "does not work for import requests, only
+            # export" (and does not work for actions requiring commissioner
+            # access either way). Every import is therefore authorised solely
+            # by the session cookie, which require_writable() above already
+            # guarantees is present.
             response = self._client.post(
                 url,
-                data=params | self.auth.request_params(),
+                data=params,
                 headers=self.auth.request_headers(),
             )
         except httpx.HTTPError as exc:
@@ -147,22 +166,32 @@ class MFLWriteClient:
             succeeded=succeeded,
         )
 
-    def _build_params(self, payload: ActionPayload, endpoint) -> dict[str, str]:
-        """Translate payload fields into MFL request parameters.
+    def _params_from_wire(self, wire: dict, endpoint) -> dict[str, str]:
+        """Translate a payload's wire fields into MFL request parameters.
 
         Uses only the verified ``field_map``; there is no fallback that guesses
-        a parameter name from a field name.
+        a parameter name from a field name. ``wire`` is the output of
+        :meth:`~mflbot.recommend.models.ActionPayload.wire_fields` -- already
+        shaped for this specific capability, not the raw dataclass fields (see
+        that method for why the two can differ).
+
+        The DATA/XML question this docstring used to flag as open is resolved:
+        MFL's Request Reference Page confirms all six of this bot's write
+        capabilities take flat key=value parameters, not an XML DATA blob
+        (that format is used elsewhere -- draftResults, auctionResults,
+        salaries -- none of which this bot writes to).
         """
-        data = payload.to_dict()
         params: dict[str, str] = {"TYPE": endpoint.type_name}
         for field_name, param_name in endpoint.field_map.items():
-            value = data.get(field_name)
+            value = wire.get(field_name)
             if value is None:
                 continue
             if isinstance(value, (list, tuple)):
                 params[param_name] = ",".join(str(v) for v in value)
             elif isinstance(value, bool):
                 params[param_name] = "1" if value else "0"
+            elif isinstance(value, datetime):
+                params[param_name] = str(int(value.timestamp()))
             else:
                 params[param_name] = str(value)
         return params

@@ -198,8 +198,12 @@ def test_api_key_alone_cannot_write() -> None:
 def test_display_only_fields_are_never_transmitted(db, tokens) -> None:
     """Fields carried for the user's benefit must not reach MFL.
 
-    ``slot_names`` and ``waiver_system`` exist so the user can read what an
-    action means. Sending them would put unvetted parameters on a real request.
+    ``slot_names`` exists so the user can read what an action means, and
+    ``franchise_id`` is display-only across every write payload -- MFL's docs
+    describe FRANCHISE_ID as a commissioner-only impersonation override, and
+    this bot's identity always comes from the session cookie. Even with a
+    field_map entry present for franchise_id (proving the omission isn't just
+    "nobody wrote the mapping yet"), it must never appear in what gets sent.
     """
     from mflbot.config import LeagueRef
     from mflbot.mfl.auth import AuthState, Credentials
@@ -236,13 +240,321 @@ def test_display_only_fields_are_never_transmitted(db, tokens) -> None:
         slot_names=("QB", "RB"),
     )
 
-    params = client._build_params(payload, registry.writes[Capability.SUBMIT_LINEUP])
+    wire = payload.wire_fields()
+    assert "franchise_id" not in wire and "slot_names" not in wire
+
+    params = client._params_from_wire(wire, registry.writes[Capability.SUBMIT_LINEUP])
 
     assert params == {
         "TYPE": "lineup",
         "L": "TEST0001",
         "W": "3",
-        "FRANCHISE": "0001",
         "STARTERS": "p-qb1,p-rb1",
     }
+    assert "0001" not in params.values(), "franchise_id leaked despite being display-only"
     assert "QB,RB" not in params.values()
+
+
+# -- real, hand-verified wire shapes (from MFL's Request Reference Page) ---
+
+from mflbot.config import LeagueRef  # noqa: E402
+from mflbot.mfl.auth import AuthState, Credentials  # noqa: E402
+
+
+def _issue_token(store, tokens, payload, actor="test"):
+    from mflbot.recommend.models import Confidence, Evidence, Recommendation, RecommendationKind
+
+    kind_by_capability = {
+        Capability.SUBMIT_LINEUP: "lineup",
+        Capability.ADD_DROP_FCFS: "add_drop",
+        Capability.WAIVER_CLAIM_ORDER: "add_drop",
+        Capability.WAIVER_CLAIM_BBID: "add_drop",
+        Capability.PROPOSE_TRADE: "trade_proposal",
+        Capability.RESPOND_TO_TRADE: "trade_response",
+    }
+    recommendation = Recommendation(
+        kind=RecommendationKind(kind_by_capability[payload.capability]),
+        payload=payload, rationale="synthetic", evidence=Evidence(),
+        confidence=Confidence.HIGH,
+    )
+    store.save(recommendation)
+    return recommendation, tokens.issue(recommendation, actor)
+
+
+def _real_registry():
+    return EndpointRegistry.load("endpoints.lock.json")
+
+
+def test_lock_file_unlocks_all_six_capabilities() -> None:
+    registry = _real_registry()
+    assert registry.unverified_writes() == ()
+    assert registry.write(Capability.ADD_DROP_FCFS).type_name == "fcfsWaiver"
+    assert registry.write(Capability.WAIVER_CLAIM_BBID).type_name == "blindBidWaiverRequest"
+    assert registry.write(Capability.WAIVER_CLAIM_ORDER).type_name == "waiverRequest"
+    assert registry.write(Capability.PROPOSE_TRADE).type_name == "tradeProposal"
+    assert registry.write(Capability.RESPOND_TO_TRADE).type_name == "tradeResponse"
+    assert registry.write(Capability.SUBMIT_LINEUP).type_name == "lineup"
+
+
+def test_fcfs_wire_shape_matches_mfls_flat_add_drop_params(db, store, tokens) -> None:
+    from mflbot.recommend.models import AddDropPayload
+
+    payload = AddDropPayload(
+        Capability.ADD_DROP_FCFS, "TEST0001", "0001", "p-fa1", "p-rb2"
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+    posted = {}
+
+    class Recorder:
+        def post(self, url, data=None, headers=None):
+            posted["data"] = data
+            return type("R", (), {"status_code": 200, "text": "OK"})()
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=Recorder(),
+    )
+    client.submit(payload, token)
+    assert posted["data"] == {
+        "TYPE": "fcfsWaiver", "L": "TEST0001", "ADD": "p-fa1", "DROP": "p-rb2",
+    }
+
+
+def test_bbid_wire_shape_matches_mfls_compound_picks_format(db, store, tokens) -> None:
+    """"<add>_<bid>_<drop>", with MFL's documented "0000" sentinel when not
+    dropping anyone -- the exact shape from the Request Reference Page."""
+    from mflbot.recommend.models import AddDropPayload
+
+    payload = AddDropPayload(
+        Capability.WAIVER_CLAIM_BBID, "TEST0001", "0001", "p-fa1", None,
+        bid_amount=12.5,
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+    posted = {}
+
+    class Recorder:
+        def post(self, url, data=None, headers=None):
+            posted["data"] = data
+            return type("R", (), {"status_code": 200, "text": "OK"})()
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=Recorder(),
+    )
+    client.submit(payload, token)
+    assert posted["data"]["PICKS"] == "p-fa1_12.5_0000"
+
+
+def test_an_incomplete_bbid_claim_never_consumes_the_token(db, store, tokens) -> None:
+    """A blind-bid claim with no bid amount cannot become a valid request.
+    The token must survive untouched, so a corrected payload can still use it
+    -- no, it must be re-approved, but critically it must not be silently
+    burned on a submission that never actually reached MFL."""
+    from mflbot.errors import PayloadIncomplete
+    from mflbot.recommend.models import AddDropPayload
+
+    payload = AddDropPayload(
+        Capability.WAIVER_CLAIM_BBID, "TEST0001", "0001", "p-fa1", None,
+        bid_amount=None,
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+
+    class ExplodingTransport:
+        def post(self, *a, **kw):
+            raise AssertionError("a request was sent for an incomplete payload")
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=ExplodingTransport(),
+    )
+    with pytest.raises(PayloadIncomplete):
+        client.submit(payload, token)
+
+    # The token must still be usable: nothing was actually sent.
+    row = db.query_one(
+        "SELECT consumed_at FROM approval_tokens WHERE token_id=?", (token.token_id,)
+    )
+    assert row["consumed_at"] is None, "an incomplete payload must not burn the token"
+
+
+def test_waiver_order_claim_without_a_round_never_consumes_the_token(db, store, tokens) -> None:
+    from mflbot.errors import PayloadIncomplete
+    from mflbot.recommend.models import AddDropPayload
+
+    payload = AddDropPayload(
+        Capability.WAIVER_CLAIM_ORDER, "TEST0001", "0001", "p-fa1", "p-rb2",
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+
+    class ExplodingTransport:
+        def post(self, *a, **kw):
+            raise AssertionError("a request was sent with no ROUND set")
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=ExplodingTransport(),
+    )
+    with pytest.raises(PayloadIncomplete, match="ROUND"):
+        client.submit(payload, token)
+    row = db.query_one(
+        "SELECT consumed_at FROM approval_tokens WHERE token_id=?", (token.token_id,)
+    )
+    assert row["consumed_at"] is None
+
+
+def test_waiver_order_claim_with_a_round_builds_correctly(db, store, tokens) -> None:
+    from mflbot.recommend.models import AddDropPayload
+
+    payload = AddDropPayload(
+        Capability.WAIVER_CLAIM_ORDER, "TEST0001", "0001", "p-fa1", "p-rb2",
+        round=3,
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+    posted = {}
+
+    class Recorder:
+        def post(self, url, data=None, headers=None):
+            posted["data"] = data
+            return type("R", (), {"status_code": 200, "text": "OK"})()
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=Recorder(),
+    )
+    client.submit(payload, token)
+    assert posted["data"] == {
+        "TYPE": "waiverRequest", "L": "TEST0001", "ROUND": "3", "PICKS": "p-fa1_p-rb2",
+    }
+
+
+def test_trade_response_sends_mfls_own_literal_vocabulary(db, store, tokens) -> None:
+    """RESPONSE must be the literal string 'accept'/'reject', not "1"/"0" --
+    the generic bool-to-"1"/"0" serialisation would be wrong here, which is
+    exactly why TradeResponsePayload carries MFL's own vocabulary directly
+    rather than a bool the write client would have to reinterpret."""
+    from mflbot.recommend.models import TradeResponsePayload
+
+    payload = TradeResponsePayload(
+        Capability.RESPOND_TO_TRADE, "TEST0001", "0001", "offer-9", "accept"
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+    posted = {}
+
+    class Recorder:
+        def post(self, url, data=None, headers=None):
+            posted["data"] = data
+            return type("R", (), {"status_code": 200, "text": "OK"})()
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=Recorder(),
+    )
+    client.submit(payload, token)
+    assert posted["data"]["RESPONSE"] == "accept"
+    assert posted["data"] == {
+        "TYPE": "tradeResponse", "L": "TEST0001", "TRADE_ID": "offer-9",
+        "RESPONSE": "accept",
+    }
+
+
+def test_trade_proposal_expiry_becomes_a_unix_epoch_not_an_iso_string(db, store, tokens) -> None:
+    from datetime import UTC, datetime
+
+    from mflbot.recommend.models import TradeProposalPayload
+
+    payload = TradeProposalPayload(
+        Capability.PROPOSE_TRADE, "TEST0001", "0001", "0002",
+        gives_player_ids=("p1",), receives_player_ids=("p2",),
+        expires_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+    posted = {}
+
+    class Recorder:
+        def post(self, url, data=None, headers=None):
+            posted["data"] = data
+            return type("R", (), {"status_code": 200, "text": "OK"})()
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=Recorder(),
+    )
+    client.submit(payload, token)
+    assert posted["data"]["EXPIRES"] == str(int(datetime(2026, 9, 1, tzinfo=UTC).timestamp()))
+
+
+def test_trade_proposal_with_no_expiry_omits_the_parameter(db, store, tokens) -> None:
+    """None means let MFL apply its own default (one week); it must not be
+    sent as the literal string 'None'."""
+    from mflbot.recommend.models import TradeProposalPayload
+
+    payload = TradeProposalPayload(
+        Capability.PROPOSE_TRADE, "TEST0001", "0001", "0002",
+        gives_player_ids=("p1",), receives_player_ids=("p2",),
+    )
+    recommendation, token = _issue_token(store, tokens, payload)
+    posted = {}
+
+    class Recorder:
+        def post(self, url, data=None, headers=None):
+            posted["data"] = data
+            return type("R", (), {"status_code": 200, "text": "OK"})()
+        def close(self): return None
+
+    client = MFLWriteClient(
+        LeagueRef("TEST0001", 2026, "example.invalid"),
+        AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+        tokens, registry=_real_registry(), transport=Recorder(),
+    )
+    client.submit(payload, token)
+    assert "EXPIRES" not in posted["data"]
+
+
+class _RecordingTransport:
+    """Stores the last POST body on the instance, not a closed-over loop var."""
+
+    def __init__(self) -> None:
+        self.posted: dict | None = None
+
+    def post(self, url, data=None, headers=None):
+        self.posted = data
+        return type("R", (), {"status_code": 200, "text": "OK"})()
+
+    def close(self) -> None:
+        return None
+
+
+def test_franchise_id_is_never_sent_on_any_real_write(db, store, tokens) -> None:
+    """MFL describes FRANCHISE_ID as a commissioner impersonation override.
+    This bot always acts as the authenticated owner; it must never send it."""
+    from mflbot.recommend.models import AddDropPayload, LineupPayload
+
+    cases = [
+        LineupPayload(Capability.SUBMIT_LINEUP, "TEST0001", "0007", 1, ("p1",)),
+        AddDropPayload(Capability.ADD_DROP_FCFS, "TEST0001", "0007", "p1", None),
+    ]
+    registry = _real_registry()
+    for payload in cases:
+        recommendation, token = _issue_token(store, tokens, payload)
+        transport = _RecordingTransport()
+        client = MFLWriteClient(
+            LeagueRef("TEST0001", 2026, "example.invalid"),
+            AuthState(Credentials(username="u", password="p"), session_cookie="c"),
+            tokens, registry=registry, transport=transport,
+        )
+        client.submit(payload, token)
+        assert "0007" not in transport.posted.values(), transport.posted

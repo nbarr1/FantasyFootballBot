@@ -1,0 +1,103 @@
+{
+  "_source": "MFL developer documentation, Request Reference Page, pasted into the conversation that built this bot (hand-verified, not fetched by `bot verify-endpoints`)",
+  "reads": {},
+  "writes": {
+    "add_drop_fcfs": {
+      "field_map": {
+        "add": "ADD",
+        "drop": "DROP",
+        "league_id": "L"
+      },
+      "params": [
+        "L",
+        "ADD",
+        "DROP",
+        "FRANCHISE_ID"
+      ],
+      "type_name": "fcfsWaiver"
+    },
+    "propose_trade": {
+      "field_map": {
+        "expires_at": "EXPIRES",
+        "gives_player_ids": "WILL_GIVE_UP",
+        "league_id": "L",
+        "message": "COMMENTS",
+        "receives_player_ids": "WILL_RECEIVE",
+        "to_franchise_id": "OFFEREDTO"
+      },
+      "params": [
+        "L",
+        "OFFEREDTO",
+        "WILL_GIVE_UP",
+        "WILL_RECEIVE",
+        "COMMENTS",
+        "EXPIRES",
+        "FRANCHISE_ID"
+      ],
+      "type_name": "tradeProposal"
+    },
+    "respond_to_trade": {
+      "field_map": {
+        "league_id": "L",
+        "offer_id": "TRADE_ID",
+        "response": "RESPONSE"
+      },
+      "params": [
+        "L",
+        "TRADE_ID",
+        "RESPONSE",
+        "COMMENTS",
+        "FRANCHISE_ID"
+      ],
+      "type_name": "tradeResponse"
+    },
+    "submit_lineup": {
+      "field_map": {
+        "league_id": "L",
+        "starter_ids": "STARTERS",
+        "week": "W"
+      },
+      "params": [
+        "L",
+        "W",
+        "STARTERS",
+        "COMMENTS",
+        "TIEBREAKERS",
+        "BACKUPS",
+        "FRANCHISE_ID"
+      ],
+      "type_name": "lineup"
+    },
+    "waiver_claim_bbid": {
+      "field_map": {
+        "league_id": "L",
+        "picks": "PICKS",
+        "round": "ROUND"
+      },
+      "params": [
+        "L",
+        "ROUND",
+        "PICKS",
+        "REPLACE",
+        "FRANCHISE_ID"
+      ],
+      "type_name": "blindBidWaiverRequest"
+    },
+    "waiver_claim_order": {
+      "_note": "Endpoint name/params are confirmed. This capability is still blocked upstream in analysis/waivers.py: MFL requires a ROUND number this bot has no way to determine automatically. Do not remove that block without adding real round-tracking first.",
+      "field_map": {
+        "league_id": "L",
+        "picks": "PICKS",
+        "round": "ROUND"
+      },
+      "params": [
+        "L",
+        "ROUND",
+        "PICKS",
+        "REPLACE",
+        "FRANCHISE_ID"
+      ],
+      "type_name": "waiverRequest"
+    }
+  }
+}

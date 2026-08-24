@@ -193,3 +193,21 @@ def test_value_players_records_missing_projections_as_missing(roster) -> None:
     values = value_players(roster, FakeProjections({}), 5, [5])
     assert all(v.next_week is None and v.rest_of_season is None for v in values)
     assert all(not v.has_value for v in values)
+
+
+def test_waiver_order_system_blocks_rather_than_guessing_a_round(
+    synthetic_settings, roster, free_agents, projections
+) -> None:
+    """MFL's waiverRequest import requires a ROUND number this bot has no way
+    to determine automatically -- round-tracking isn't implemented, so this
+    stays a clean block rather than a recommendation that fails at submission."""
+    order_league = dataclasses.replace(
+        synthetic_settings, waiver_system=WaiverSystem.WAIVER_ORDER,
+        waiver_type_raw="Reverse Order",
+    )
+    ideas, blocks = analyse_waivers(
+        order_league, roster, free_agents, projections, 5, [5, 6], WaiverSettings()
+    )
+    assert ideas == []
+    assert blocks and blocks[0].feature == "waivers"
+    assert "ROUND" in blocks[0].describe()

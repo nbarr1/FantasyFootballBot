@@ -57,6 +57,14 @@ _OBVIOUS_MAPPINGS = {
     "league_id": ("L",),
     "week": ("W", "WEEK"),
     "franchise_id": ("FRANCHISE", "FRANCHISE_ID", "F"),
+    "add": ("ADD",),
+    "drop": ("DROP",),
+    "round": ("ROUND",),
+    "picks": ("PICKS",),
+    "response": ("RESPONSE",),
+    "offer_id": ("TRADE_ID",),
+    "to_franchise_id": ("OFFEREDTO",),
+    "message": ("COMMENTS",),
 }
 
 
@@ -186,21 +194,30 @@ def _auto_field_map(payload_fields: tuple[str, ...], params: tuple[str, ...]) ->
     return mapping
 
 
+#: Wire field names for AddDropPayload's two special-shaped capabilities.
+#: AddDropPayload.wire_fields() composes these from several dataclass fields
+#: at once (see that method), so they cannot be read off the dataclass itself
+#: the way every other payload's fields can -- this table is the one place
+#: that composed shape has to be written down by hand, and it must be kept in
+#: sync with wire_fields() if that method ever changes.
+_ADD_DROP_WIRE_FIELDS: dict[Capability, tuple[str, ...]] = {
+    Capability.ADD_DROP_FCFS: ("league_id", "add", "drop"),
+    Capability.WAIVER_CLAIM_ORDER: ("league_id", "round", "picks"),
+    Capability.WAIVER_CLAIM_BBID: ("league_id", "round", "picks"),
+}
+
+
 #: Payload fields each capability will need mapped, so the report can say what
-#: is still outstanding. Derived from the payload dataclasses.
+#: is still outstanding. Derived from the payload dataclasses where a straight
+#: field-name mapping applies, and from _ADD_DROP_WIRE_FIELDS where it doesn't.
 def _payload_fields(capability: Capability) -> tuple[str, ...]:
-    from ..recommend.models import (
-        AddDropPayload,
-        LineupPayload,
-        TradeProposalPayload,
-        TradeResponsePayload,
-    )
+    from ..recommend.models import LineupPayload, TradeProposalPayload, TradeResponsePayload
+
+    if capability in _ADD_DROP_WIRE_FIELDS:
+        return _ADD_DROP_WIRE_FIELDS[capability]
 
     by_capability = {
         Capability.SUBMIT_LINEUP: LineupPayload,
-        Capability.ADD_DROP_FCFS: AddDropPayload,
-        Capability.WAIVER_CLAIM_ORDER: AddDropPayload,
-        Capability.WAIVER_CLAIM_BBID: AddDropPayload,
         Capability.PROPOSE_TRADE: TradeProposalPayload,
         Capability.RESPOND_TO_TRADE: TradeResponsePayload,
     }

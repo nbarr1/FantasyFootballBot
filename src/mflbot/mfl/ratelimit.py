@@ -23,8 +23,12 @@ class RateLimitPolicy:
     #: Hard ceiling on request rate, averaged over ``window_seconds``.
     max_requests: int = 30
     window_seconds: float = 60.0
-    #: Never issue two requests closer together than this.
-    min_interval_seconds: float = 0.75
+    #: Never issue two requests closer together than this. MFL's own guidance:
+    #: "Wait one second between making requests and you should be ok." Limits
+    #: are undocumented and per-IP; registering a client (see
+    #: mflbot.mfl.client.ENV_USER_AGENT) raises them roughly 2.5x, but this
+    #: default targets the unregistered tier.
+    min_interval_seconds: float = 1.0
     #: Backoff schedule applied after a 429 or 5xx.
     initial_backoff_seconds: float = 2.0
     max_backoff_seconds: float = 120.0

@@ -248,3 +248,108 @@ def test_limiter_gives_up_after_the_retry_budget() -> None:
     limiter.penalise(1)
     with pytest.raises(RateLimitError, match="Reduce polling frequency"):
         limiter.penalise(2)
+
+
+# -- host routing -------------------------------------------------------
+
+def test_league_scoped_reads_go_to_the_configured_league_host(league, tmp_path) -> None:
+    transport = RecordingTransport([FakeResponse({"league": {"id": "TEST0001"}})])
+    client = make_client(league, transport, tmp_path)
+    client.export("league", L="TEST0001")
+    assert transport.requests[0][0].startswith(f"https://{league.host}/")
+
+
+def test_reads_with_no_league_parameter_go_to_the_api_host(league, tmp_path) -> None:
+    """MFL: "if the request does not take a league parameter (L=), it must be
+    sent to the host api" -- also documented as best practice, to spread load."""
+    transport = RecordingTransport([FakeResponse({"players": {}})])
+    client = make_client(league, transport, tmp_path)
+    client.export("players")
+    url = transport.requests[0][0]
+    assert url.startswith("https://api.myfantasyleague.com/"), url
+    assert league.host not in url
+
+
+def test_login_goes_to_the_api_host_not_the_league_host(league, tmp_path) -> None:
+    """Matches MFL's own documented login example, which calls
+    api.myfantasyleague.com/{year}/login rather than a league-specific host."""
+    transport = RecordingTransport(
+        [FakeResponse({}, text='<status MFL_USER_ID="abc123"></status>')]
+    )
+    client = make_client(
+        league, transport, tmp_path,
+        credentials=Credentials(username="u", password="p"),
+    )
+    client.login()
+    assert transport.requests[0][0].startswith("https://api.myfantasyleague.com/")
+
+
+# -- API key restricted to reads -----------------------------------------
+
+def test_api_key_is_never_sent_on_a_write(league, tmp_path) -> None:
+    """MFL: the APIKEY alternate-auth path "does not work for import requests,
+    only export". Sending it on a write is at best misleading, at worst wrong
+    if MFL's handling of it there ever changes; it must never be sent."""
+    from mflbot.approval.token import TokenService
+    from mflbot.mfl.auth import AuthState
+    from mflbot.mfl.endpoints import Capability, EndpointRegistry, Provenance, WriteEndpoint
+    from mflbot.mfl.write_client import MFLWriteClient
+    from mflbot.recommend.models import LineupPayload
+    from mflbot.storage.db import Database
+
+    db = Database(":memory:")
+    db.migrate()
+    tokens = TokenService(db=db, secret=b"test-only-signing-key")
+
+    registry = EndpointRegistry()
+    registry.writes[Capability.SUBMIT_LINEUP] = WriteEndpoint(
+        capability=Capability.SUBMIT_LINEUP,
+        candidates=("lineup",),
+        description="synthetic",
+        type_name="lineup",
+        params=("L", "W", "FRANCHISE", "STARTERS"),
+        provenance=Provenance.DOC_VERIFIED,
+        field_map={
+            "league_id": "L", "week": "W",
+            "franchise_id": "FRANCHISE", "starter_ids": "STARTERS",
+        },
+    )
+
+    posted: dict = {}
+
+    class RecordingPostTransport:
+        def post(self, url, data=None, headers=None):
+            posted["data"] = data
+            posted["headers"] = headers
+            return FakeResponse({}, text="OK")
+
+        def close(self):
+            return None
+
+    auth = AuthState(
+        Credentials(api_key="leaked-api-key", username="u", password="p"),
+        session_cookie="a-real-session-cookie",
+    )
+    client = MFLWriteClient(
+        league, auth, tokens, registry=registry, transport=RecordingPostTransport()
+    )
+    payload = LineupPayload(
+        capability=Capability.SUBMIT_LINEUP,
+        league_id="TEST0001", franchise_id="0001", week=1, starter_ids=("p1",),
+    )
+    from mflbot.recommend.models import Confidence, Evidence, Recommendation, RecommendationKind
+    from mflbot.recommend.store import RecommendationStore
+
+    recommendation = Recommendation(
+        kind=RecommendationKind.LINEUP, payload=payload, rationale="x",
+        evidence=Evidence(), confidence=Confidence.HIGH,
+    )
+    RecommendationStore(db).save(recommendation)
+    token = tokens.issue(recommendation, "test")
+
+    client.submit(payload, token)
+
+    assert "APIKEY" not in posted["data"], posted["data"]
+    assert "leaked-api-key" not in str(posted["data"])
+    # The cookie is still the (correct, documented) auth path for writes.
+    assert "a-real-session-cookie" in posted["headers"]["Cookie"]

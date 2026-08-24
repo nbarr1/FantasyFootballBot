@@ -93,6 +93,26 @@ class ActionPayload:
         """
         raise NotImplementedError
 
+    def wire_fields(self) -> dict[str, Any]:
+        """Field name -> value, ready for the write client's ``field_map`` to
+        turn into MFL request parameters.
+
+        The default is the payload's own transmitted fields, verbatim. Override
+        this only when a capability's *wire shape* depends on more than field
+        names -- when the same dataclass serialises differently depending on
+        which capability it carries (see :class:`AddDropPayload`), or a field's
+        raw value needs composing into something MFL expects rather than a
+        straight rename (a Unix-epoch integer from a ``datetime``, for
+        instance, which the write client's generic value conversion already
+        handles without an override here).
+
+        May raise :class:`~mflbot.errors.PayloadIncomplete` if the payload does
+        not carry enough information to build a valid request -- the write
+        client calls this before consuming the approval token specifically so
+        that failure here never spends a real approval.
+        """
+        return {name: getattr(self, name) for name in self.transmitted_fields()}
+
     def describe(self) -> str:
         raise NotImplementedError
 
@@ -100,6 +120,10 @@ class ActionPayload:
 @dataclass(frozen=True, slots=True)
 class LineupPayload(ActionPayload):
     league_id: str
+    #: Which franchise this lineup is for. Not transmitted: MFL's docs describe
+    #: FRANCHISE_ID as a commissioner-only override for acting on another
+    #: owner's behalf, and this bot only ever acts as the authenticated owner,
+    #: whose identity the session cookie already establishes.
     franchise_id: str
     week: int
     #: Player ids to start, in slot order.
@@ -107,7 +131,9 @@ class LineupPayload(ActionPayload):
     #: Human-readable slot names parallel to ``starter_ids``, for display only.
     slot_names: tuple[str, ...] = ()
 
-    DISPLAY_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"slot_names"})
+    DISPLAY_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"slot_names", "franchise_id"}
+    )
 
     def describe(self) -> str:
         # Every starter must appear, even if slot_names is short or absent.
@@ -126,17 +152,45 @@ class LineupPayload(ActionPayload):
 
 @dataclass(frozen=True, slots=True)
 class AddDropPayload(ActionPayload):
+    """One waiver/free-agent move.
+
+    The dataclass is shared across three capabilities whose MFL wire shapes
+    genuinely differ, not just in parameter names but in structure:
+
+    * ``ADD_DROP_FCFS`` (``fcfsWaiver``) -- ADD and DROP are separate flat
+      parameters.
+    * ``WAIVER_CLAIM_ORDER`` (``waiverRequest``) and ``WAIVER_CLAIM_BBID``
+      (``blindBidWaiverRequest``) -- add/drop(/bid) are packed into one
+      underscore-joined ``PICKS`` string, MFL's own compound-claim format.
+
+    :meth:`wire_fields` is the single place that difference is handled, so
+    every other part of the bot -- the analyser, the approval display, the
+    audit log -- deals in the same plain add/drop/bid fields regardless of
+    which workflow applies.
+    """
+
     league_id: str
+    #: See LineupPayload.franchise_id -- identity comes from the session
+    #: cookie; this bot never impersonates another franchise.
     franchise_id: str
     add_player_id: str | None
     drop_player_id: str | None
-    #: Blind-bid amount. None for FCFS and waiver-order leagues.
+    #: Blind-bid amount. Required (and validated in wire_fields) for
+    #: WAIVER_CLAIM_BBID; unused otherwise.
     bid_amount: float | None = None
+    #: Waiver round. Required for WAIVER_CLAIM_ORDER (validated in
+    #: wire_fields); optional for WAIVER_CLAIM_BBID, where MFL only asks for
+    #: it in leagues using "conditional blind bidding" -- something this bot
+    #: has no way to detect, so it is simply omitted from the request when
+    #: unset here, which is the documented behaviour for the common case.
+    round: int | None = None
     #: Recorded so the rationale can explain which workflow applies; MFL infers
     #: it from the league, so it is not transmitted.
     waiver_system: str = "unknown"
 
-    DISPLAY_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"waiver_system"})
+    DISPLAY_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"waiver_system", "franchise_id"}
+    )
 
     def describe(self) -> str:
         bits = []
@@ -146,7 +200,55 @@ class AddDropPayload(ActionPayload):
             bits.append(f"DROP {self.drop_player_id}")
         if self.bid_amount is not None:
             bits.append(f"bid ${self.bid_amount:g}")
+        if self.round is not None:
+            bits.append(f"round {self.round}")
         return f"{' / '.join(bits)} (franchise {self.franchise_id})"
+
+    def wire_fields(self) -> dict[str, Any]:
+        from ..errors import PayloadIncomplete
+        from ..mfl.endpoints import Capability
+
+        if self.capability is Capability.ADD_DROP_FCFS:
+            out: dict[str, Any] = {"league_id": self.league_id}
+            if self.add_player_id:
+                out["add"] = self.add_player_id
+            if self.drop_player_id:
+                out["drop"] = self.drop_player_id
+            return out
+
+        if self.capability not in (
+            Capability.WAIVER_CLAIM_ORDER, Capability.WAIVER_CLAIM_BBID
+        ):
+            raise AssertionError(f"AddDropPayload has no wire shape for {self.capability}")
+
+        if not self.add_player_id:
+            raise PayloadIncomplete("a waiver claim needs a player to add")
+        # MFL's compound PICKS format: "<add>_<drop>", or with a bid amount
+        # "<add>_<bid>_<drop>". "0000" is MFL's documented sentinel for "not
+        # dropping anyone" inside this compound format -- unlike fcfsWaiver
+        # above, DROP cannot simply be omitted here.
+        drop = self.drop_player_id or "0000"
+        if self.capability is Capability.WAIVER_CLAIM_BBID:
+            if self.bid_amount is None:
+                raise PayloadIncomplete(
+                    "a blind-bid waiver claim needs a bid amount, and none is set "
+                    "on this recommendation"
+                )
+            picks = f"{self.add_player_id}_{self.bid_amount:g}_{drop}"
+        else:
+            picks = f"{self.add_player_id}_{drop}"
+
+        out = {"league_id": self.league_id, "picks": picks}
+        if self.round is not None:
+            out["round"] = self.round
+        elif self.capability is Capability.WAIVER_CLAIM_ORDER:
+            raise PayloadIncomplete(
+                "this league uses waiver-order claims, which require a ROUND "
+                "number, and none is set on this recommendation -- edit it "
+                "(e.g. `bot edit <id> round=1`) with the round your league "
+                "uses before approving"
+            )
+        return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,8 +259,14 @@ class TradeProposalPayload(ActionPayload):
     #: Assets the user gives up and receives. Ids, exactly as MFL knows them.
     gives_player_ids: tuple[str, ...] = ()
     receives_player_ids: tuple[str, ...] = ()
-    expires_days: int = 3
+    #: When the offer itself (not this approval) expires and can no longer be
+    #: accepted. None means MFL applies its own default (one week from when
+    #: offered) -- transmitted as a Unix-epoch integer when set, via the write
+    #: client's generic datetime handling; not sent at all when None.
+    expires_at: datetime | None = None
     message: str = ""
+
+    DISPLAY_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"franchise_id"})
 
     def describe(self) -> str:
         return (
@@ -173,10 +281,15 @@ class TradeResponsePayload(ActionPayload):
     league_id: str
     franchise_id: str
     offer_id: str
-    accept: bool
+    #: MFL's own vocabulary, verbatim ('accept', 'reject', or 'revoke' -- the
+    #: last only valid when the calling franchise originated the offer, which
+    #: this bot's trade analyser never generates a recommendation for).
+    response: str
+
+    DISPLAY_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"franchise_id"})
 
     def describe(self) -> str:
-        return f"{'ACCEPT' if self.accept else 'REJECT'} trade offer {self.offer_id}"
+        return f"{self.response.upper()} trade offer {self.offer_id}"
 
 
 @dataclass(frozen=True, slots=True)

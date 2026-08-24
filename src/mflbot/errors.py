@@ -72,6 +72,15 @@ class PreconditionFailed(MFLBotError):
     """
 
 
+class PayloadIncomplete(MFLBotError):
+    """A payload cannot be translated into a valid MFL request as it stands --
+    e.g. a blind-bid waiver claim with no bid amount, or a waiver-order claim
+    with no round number. Raised while building the request, strictly before
+    the approval token is consumed: an incomplete payload must never burn a
+    real approval for a request that was never actually sent.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class Missing:
     """An explicit absent-value marker carrying the reason it is absent.
