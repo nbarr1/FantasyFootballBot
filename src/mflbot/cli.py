@@ -424,7 +424,12 @@ def cmd_validate_scoring(args, context: BotContext) -> int:
 
     It needs per-player *stat lines* to score. MFL's ``playerScores`` export
     gives totals, not stat lines, so this command reports what it can verify
-    and states plainly what it cannot.
+    and states plainly what it cannot. This is not a gap MFL's own API can ever
+    close: its developer terms state raw NFL player stats are withheld under a
+    stats licensing agreement, full stop -- a full replay needs a stat-line
+    source from one of the paid providers stubbed in
+    :mod:`mflbot.ingest.news.paid_stubs` (MFL's own docs name FantasyData.com,
+    Sportradar and XML Team as the sanctioned options).
     """
     week = args.week or context.current_week()
     if week is None:

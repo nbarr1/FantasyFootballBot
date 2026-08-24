@@ -43,6 +43,19 @@ class LeagueRef:
         return f"https://{self.host}/{self.season}"
 
     @property
+    def global_base_url(self) -> str:
+        """Base URL for requests that take no league parameter (``L=``).
+
+        MFL's developer docs are explicit: "if the request does not take a
+        league parameter (L=), it must be sent to the host api" -- and doing so
+        is also the documented best practice for spreading load ("use
+        api.myfantasyleague.com ... that will spread out your requests across a
+        number of servers"). The hostname is the literal ``api``, not derived
+        from the configured league host.
+        """
+        return f"https://api.myfantasyleague.com/{self.season}"
+
+    @property
     def api_docs_url(self) -> str:
         return f"https://{self.host}/{self.season}/api_info?STATE=details"
 

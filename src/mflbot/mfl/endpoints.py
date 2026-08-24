@@ -73,6 +73,16 @@ class ReadEndpoint:
     description: str = ""
     requires_auth: bool = False
 
+    @property
+    def is_league_scoped(self) -> bool:
+        """True if this export takes a league parameter (``L``).
+
+        Drives host selection: MFL's docs require requests with no league
+        parameter to go to the ``api`` host rather than a league-specific one.
+        See :attr:`mflbot.config.LeagueRef.global_base_url`.
+        """
+        return "L" in self.params
+
 
 @dataclass(frozen=True, slots=True)
 class WriteEndpoint:

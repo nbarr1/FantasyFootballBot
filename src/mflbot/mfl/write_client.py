@@ -23,6 +23,7 @@ from ..config import LeagueRef
 from ..errors import EndpointNotVerifiedError, TransportError
 from ..recommend.models import ActionPayload, payload_hash
 from .auth import AuthState, redact
+from .client import resolve_user_agent
 from .endpoints import Capability, EndpointRegistry
 from .ratelimit import RateLimiter, RateLimitPolicy
 
@@ -62,7 +63,7 @@ class MFLWriteClient:
         self.rate_limiter = rate_limiter or RateLimiter(RateLimitPolicy())
         self._client = transport or httpx.Client(
             timeout=httpx.Timeout(30.0),
-            headers={"User-Agent": "mflbot/0.1"},
+            headers={"User-Agent": resolve_user_agent()},
             follow_redirects=True,
         )
         self._owns_transport = transport is None
@@ -119,9 +120,15 @@ class MFLWriteClient:
         self.rate_limiter.acquire()
         url = f"{self.league.base_url}/import"
         try:
+            # No APIKEY here, deliberately: MFL's docs state the API key
+            # alternate-auth path "does not work for import requests, only
+            # export" (and does not work for actions requiring commissioner
+            # access either way). Every import is therefore authorised solely
+            # by the session cookie, which require_writable() above already
+            # guarantees is present.
             response = self._client.post(
                 url,
-                data=params | self.auth.request_params(),
+                data=params,
                 headers=self.auth.request_headers(),
             )
         except httpx.HTTPError as exc:
@@ -152,6 +159,17 @@ class MFLWriteClient:
 
         Uses only the verified ``field_map``; there is no fallback that guesses
         a parameter name from a field name.
+
+        Open question, not yet resolved: MFL's docs note that "some import
+        requests require you to pass in an XML representation of the data
+        being uploaded, via a field called 'DATA'" rather than flat key=value
+        parameters. Nothing seen so far confirms whether that applies to any of
+        this bot's six write capabilities specifically -- that detail lives on
+        the per-command Request Reference Page, not the general overview. If
+        ``bot verify-endpoints`` (or a manually supplied Request Reference
+        excerpt) turns up a DATA-based import among them, this method needs a
+        second code path that serialises the payload as XML into a single
+        ``DATA`` field instead of flat params; do not guess at that shape.
         """
         data = payload.to_dict()
         params: dict[str, str] = {"TYPE": endpoint.type_name}

@@ -41,6 +41,15 @@ parameters. **It was not reachable from the machine that generated this code**
 (the whole `myfantasyleague.com` domain was blocked by network policy), so the
 `import` endpoint names could not be confirmed.
 
+The user later pasted MFL's general developer-program overview page into the
+conversation, which confirmed several protocol-level facts directly in the code
+(the login flow and cookie name, that a request with no league parameter must
+go to the `api` host, that the `APIKEY` alternate-auth path never works for
+imports, franchise/player id formatting, client registration and rate-limit
+behaviour) — but it is the overview page, not the per-command Request Reference
+Page, so it still does not name any `import?TYPE=...` value. Those remain
+unconfirmed.
+
 Rather than ship a plausible guess and POST it at a real league, every write
 capability ships as `UNVERIFIED` and refuses to fire. Running:
 
@@ -101,6 +110,12 @@ $EDITOR config.toml            # set [league] id / season / host
 export MFLBOT_MFL_USERNAME=...      # required for any write
 export MFLBOT_MFL_PASSWORD=...
 export MFLBOT_MFL_API_KEY=...       # optional; unlocks private-league reads
+
+# Treat all three like passwords: set them in your shell or .env (gitignored),
+# never in config.toml or any other file this repo tracks, and never paste a
+# real value into an issue, chat log, or commit message. If one ever ends up
+# somewhere it shouldn't, MFL will invalidate and reissue an API key on
+# request; change your password the normal way for the other two.
 
 bot verify-endpoints           # required before writes will ever fire
 bot sync-config                # pull league settings + scoring rules
@@ -168,7 +183,22 @@ public developer documentation page only.
 Caching and rate limiting are client-level policy, not caller discipline: the
 TTL for each endpoint is declared once, in `mflbot/mfl/endpoints.py`, so an
 analysis run that asks for the player database five times produces one request
-per day. A 429 triggers exponential backoff with jitter.
+per day. A 429 triggers exponential backoff with jitter, and requests are
+spaced at least a second apart by default, matching MFL's own guidance.
+
+Two routing details, confirmed against MFL's own developer documentation and
+enforced by the client rather than left to each call site: a request with no
+league parameter (the player database, injuries, the NFL schedule, ADP, login
+itself...) goes to `api.myfantasyleague.com` rather than your configured
+league host, and the `APIKEY` alternate-auth parameter is never sent on a
+write — MFL's docs state plainly it "does not work for import requests, only
+export."
+
+MFL also throttles unregistered API clients harder than registered ones
+(~2.5x lower ceiling). Registering (MFL's API Client Registration page, plus
+an SMS validation code) is free and optional; set `MFLBOT_USER_AGENT` to the
+exact string you register once you have, and every request will carry it.
+Unset, the bot runs at the unregistered tier, which is fully functional.
 
 ## Configuration
 
@@ -217,7 +247,18 @@ daily refresh updates one object and every recommendation moves with it.
 - **`bot validate-scoring` is partial.** A full replay needs per-player stat
   lines; MFL's `playerScores` returns points already computed. The command
   verifies that every scored position has parseable rules and says plainly what
-  it cannot check.
+  it cannot check. This one MFL's API cannot ever close directly: its terms
+  forbid distributing raw player stats under its stats licensing agreement. A
+  full replay needs a stat-line source from one of the paid providers stubbed
+  in `mflbot/ingest/news/paid_stubs.py` — MFL's own docs name FantasyData.com,
+  Sportradar and XML Team as the sanctioned options.
+- **Whether any write needs XML `DATA` instead of flat parameters is still
+  open.** MFL's docs mention that some imports take an XML blob in a `DATA`
+  field rather than plain key=value parameters, without saying which. None of
+  this bot's six write capabilities are confirmed either way — that lives on
+  the per-command Request Reference Page, not the general API overview.
+  `bot verify-endpoints` should surface this once it can read that page; until
+  then `MFLWriteClient._build_params` sends flat parameters and says so.
 - **Draft picks are not valued** in trade analysis, and are flagged as excluded
   when an offer contains them.
 - **Email and Telegram notifiers are stubs**, as are the paid news providers.
@@ -226,7 +267,7 @@ daily refresh updates one object and every recommendation moves with it.
 ## Tests
 
 ```bash
-pytest              # 161 tests
+pytest              # 165 tests
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`
