@@ -14,7 +14,7 @@ from mflbot.analysis.waivers import (
 )
 from mflbot.config import WaiverSettings
 from mflbot.domain.models import Franchise, Player, WaiverSystem
-from tests.conftest import FakeProjections
+from helpers import FakeProjections
 
 
 @pytest.fixture

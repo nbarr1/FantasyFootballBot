@@ -17,6 +17,9 @@ from mflbot.domain.models import Franchise, LeagueSettings, LineupSlot, Player, 
 from mflbot.recommend.store import RecommendationStore
 from mflbot.storage.db import Database
 from mflbot.storage.repositories import Repositories
+from helpers import FakeProjections
+
+__all__ = ["FakeProjections"]
 
 os.environ.setdefault("MFLBOT_APPROVAL_SECRET", "test-only-signing-key")
 
@@ -90,33 +93,3 @@ def synthetic_players() -> list[Player]:
         Player("p-te1", "Synthetic TE One", "TE", "AAA"),
         Player("p-te2", "Synthetic TE Two", "TE", "BBB"),
     ]
-
-
-class FakeProjections:
-    """Stands in for ProjectionProvider with SYNTHETIC per-week points."""
-
-    def __init__(self, by_week: dict[int, dict[str, float]]) -> None:
-        self._by_week = by_week
-
-    def week(self, week: int) -> dict[str, float]:
-        return self._by_week.get(week, {})
-
-    def rest_of_season(self, player_id: str, weeks):
-        from mflbot.errors import Missing
-
-        total, covered = 0.0, []
-        for week in weeks:
-            points = self.week(week).get(player_id)
-            if points is None:
-                continue
-            total += points
-            covered.append(week)
-        if not covered:
-            return Missing("no projections", {"player_id": player_id})
-        return round(total, 3), covered
-
-    def coverage(self, player_ids, week: int) -> float:
-        if not player_ids:
-            return 0.0
-        available = self.week(week)
-        return sum(1 for pid in player_ids if pid in available) / len(player_ids)

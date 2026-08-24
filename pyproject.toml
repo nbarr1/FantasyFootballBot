@@ -50,4 +50,7 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "tests" is on the path so helper modules import identically under both
+# `pytest` (console script, what CI runs) and `python -m pytest` (which also
+# injects the CWD). Relying on the latter's implicit CWD hid a CI failure.
+pythonpath = ["src", "tests"]
