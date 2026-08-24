@@ -11,13 +11,13 @@ from __future__ import annotations
 import os
 
 import pytest
+from helpers import FakeProjections
 
 from mflbot.approval.token import TokenService
 from mflbot.domain.models import Franchise, LeagueSettings, LineupSlot, Player, WaiverSystem
 from mflbot.recommend.store import RecommendationStore
 from mflbot.storage.db import Database
 from mflbot.storage.repositories import Repositories
-from helpers import FakeProjections
 
 __all__ = ["FakeProjections"]
 

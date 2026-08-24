@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+from helpers import FakeProjections
 
 from mflbot.analysis.waivers import (
     analyse_waivers,
@@ -14,7 +15,6 @@ from mflbot.analysis.waivers import (
 )
 from mflbot.config import WaiverSettings
 from mflbot.domain.models import Franchise, Player, WaiverSystem
-from helpers import FakeProjections
 
 
 @pytest.fixture
