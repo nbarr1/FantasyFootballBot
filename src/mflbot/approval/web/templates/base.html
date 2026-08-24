@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}mflbot approvals{% endblock %}</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 60rem;
+           margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    .card { border: 1px solid #8884; border-radius: 8px; padding: 1rem;
+            margin-bottom: 1rem; }
+    .payload { background: #8881; padding: .75rem; border-radius: 6px;
+               font-family: ui-monospace, monospace; font-size: .85rem;
+               overflow-x: auto; }
+    .caveat { color: #b45309; }
+    .banner { border-left: 4px solid #b45309; padding: .5rem .75rem;
+              background: #b4530911; margin-bottom: 1.5rem; }
+    button { padding: .4rem .9rem; border-radius: 6px; cursor: pointer; }
+    .conf-low { color: #b45309; } .conf-high { color: #15803d; }
+  </style>
+</head>
+<body>
+  <div class="banner">
+    <strong>Scaffold.</strong> This dashboard is unfinished: no CSRF protection
+    and no authentication beyond localhost binding. The CLI
+    (<code>bot pending</code>) is the supported approval surface.
+  </div>
+  <h1><a href="/">mflbot</a></h1>
+  {% block content %}{% endblock %}
+</body>
+</html>

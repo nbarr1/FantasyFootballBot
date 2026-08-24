@@ -1,0 +1,27 @@
+# docker compose -f deploy/docker-compose.yml up -d
+#
+# Approve from the host:
+#   docker compose -f deploy/docker-compose.yml exec bot bot pending
+#   docker compose -f deploy/docker-compose.yml exec bot bot approve <id>
+
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: mflbot
+    restart: unless-stopped
+    working_dir: /data
+    volumes:
+      # Config, database, response cache and approval key all live here.
+      - ./state:/data
+    environment:
+      # Required before anything can run.
+      MFLBOT_MFL_USERNAME: "${MFLBOT_MFL_USERNAME:?set this in deploy/.env}"
+      MFLBOT_MFL_PASSWORD: "${MFLBOT_MFL_PASSWORD:?set this in deploy/.env}"
+      MFLBOT_MFL_API_KEY: "${MFLBOT_MFL_API_KEY:-}"
+      # Set this explicitly: a container filesystem does not persist the
+      # generated key, and a new key invalidates outstanding approvals.
+      MFLBOT_APPROVAL_SECRET: "${MFLBOT_APPROVAL_SECRET:?set this in deploy/.env}"
+      MFLBOT_WEBHOOK_URL: "${MFLBOT_WEBHOOK_URL:-}"
+    command: ["run"]

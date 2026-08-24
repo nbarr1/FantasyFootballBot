@@ -1,0 +1,91 @@
+# mflbot configuration.
+#
+# This file holds BEHAVIOUR settings only -- your risk tolerance and how often
+# jobs run. It deliberately contains NO league data: scoring rules, roster
+# limits, lineup slots, the waiver system and the trade deadline are all pulled
+# from the MFL API and stored in the database. If the bot has not pulled them
+# yet, the affected features block rather than assuming a default.
+#
+# Secrets are never read from this file. See .env.example.
+
+# Approval surface: "cli" (supported default) or "web" (scaffolded dashboard).
+# Must stay above the first [table]: in TOML a bare key after a table header
+# belongs to that table, not to the top level.
+approval_channel = "cli"
+
+
+[league]
+# Which league to watch. These three are required.
+id = "53367"
+season = 2026
+host = "www47.myfantasyleague.com"
+
+# Your own franchise id, e.g. "0003". Required before any roster-relative
+# analysis can run. Discover it with `bot whoami` after setting credentials;
+# the bot will not guess which team is yours.
+# franchise_id = "0001"
+
+
+[storage]
+engine = "sqlite"
+path = "data/mflbot.db"
+
+
+# How large an edge must be before an add/drop is worth your attention.
+# These gate HOW MANY recommendations surface. Tune them: the defaults are
+# deliberately conservative, which means fewer suggestions, not better ones.
+[waivers]
+# Minimum projected points-per-week gain over the player you would drop.
+min_projection_delta = 1.5
+# Rest-of-season gain threshold, for stash-type adds that do not help this week.
+min_ros_delta = 8.0
+# Never surface more than this many add/drop pairs at once.
+max_recommendations = 5
+# Free agents projected below this are not considered at all.
+candidate_projection_floor = 4.0
+# Fraction of your REMAINING blind-bid budget to offer for the top claim.
+# 0.0 bids the minimum, 1.0 would shoot the whole budget on one player.
+# Only used in blind-bid leagues, and only when MFL reports your real budget.
+bbid_aggressiveness = 0.15
+
+
+[trades]
+max_proposals_per_week = 3
+# A proposal is only surfaced if BOTH sides project to gain at least this much
+# starting value. A trade the other manager would obviously decline is noise.
+min_mutual_gain = 5.0
+# How much you must gain before an incoming offer is recommended for acceptance.
+min_accept_gain = 3.0
+
+
+[lineup]
+# Hours before the league's real lineup deadline to run analysis. The deadline
+# itself is read from the league export -- no day of the week is assumed here.
+lead_times_hours = [48.0, 12.0, 2.0]
+# Escalate loudly if a player designated OUT is still starting this close to lock.
+escalate_within_hours = 3.0
+
+
+[news]
+# "mfl_injuries" is the always-on baseline (official designations, no extra
+# credentials). "sleeper" is the default free, no-credential external source.
+# Paid providers (sportsdataio, fantasynerds, rotowire) are stubs -- enabling
+# one without implementing it will log that it is unavailable and skip it.
+sources = ["mfl_injuries", "sleeper"]
+poll_minutes = 45
+
+
+[notify]
+# Transport: "webhook" (works with Discord), "email" or "telegram" (both stubs).
+# The webhook URL is a secret: set MFLBOT_WEBHOOK_URL, not a value here.
+transport = "webhook"
+enabled = true
+
+
+[schedule]
+# Cron expressions are evaluated in UTC.
+league_state_poll_minutes = 45
+config_refresh_cron = "0 5 * * *"
+player_db_refresh_cron = "30 5 * * *"
+waiver_analysis_cron = "0 22 * * 1"   # Monday 22:00 UTC, ahead of typical waivers
+trade_analysis_cron = "0 20 * * 3"    # Wednesday 20:00 UTC
