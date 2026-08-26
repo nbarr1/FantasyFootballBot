@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}League · mflbot{% endblock %}
+{% block content %}
+<h1>League configuration</h1>
+<p class="muted small">
+  Everything on this page came from MFL's API and is stored as read. Nothing here
+  is configured locally, and a value MFL did not report shows as unknown rather
+  than as a default.
+</p>
+
+{% if not league.synced %}
+  <div class="banner warn">
+    Nothing is synced yet. Run <a href="/actions">Sync league config</a> first.
+  </div>
+{% else %}
+
+<div class="grid two">
+  <div class="card">
+    <h2>{{ league.name or 'Unnamed league' }}</h2>
+    <dl class="kv">
+      <dt>League id</dt><dd class="mono">{{ league.league_id }}</dd>
+      <dt>Season</dt><dd>{{ league.season }}</dd>
+      <dt>Franchises</dt><dd>{{ league.franchise_count if league.franchise_count is not none else 'unknown' }}</dd>
+      <dt>Roster size</dt><dd>{{ league.roster_size if league.roster_size is not none else 'unknown' }}</dd>
+      <dt>Starters</dt><dd>{{ league.starter_count if league.starter_count is not none else 'unknown' }}</dd>
+      <dt>Taxi squad</dt><dd>{{ league.taxi_squad_size if league.taxi_squad_size is not none else 'unknown' }}</dd>
+      <dt>Injured reserve</dt><dd>{{ league.injured_reserve if league.injured_reserve is not none else 'unknown' }}</dd>
+      <dt>Waiver system</dt>
+      <dd>{{ league.waiver_system }}
+        <span class="muted small">(MFL reported {{ league.waiver_type_raw or 'nothing' }})</span></dd>
+      <dt>Trade deadline</dt><dd>{{ league.trade_deadline }}</dd>
+      <dt>Lineup deadline</dt><dd>{{ league.lineup_deadline }}</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Starting lineup</h2>
+    {% if not league.slots %}
+      <p class="empty">No lineup slots parsed, so lineup analysis is blocked.</p>
+    {% else %}
+      <table>
+        <thead><tr><th>Slot</th><th class="num">Starters</th><th>Eligible</th></tr></thead>
+        <tbody>
+        {% for slot in league.slots %}
+          <tr>
+            <td>{{ slot.name }}</td>
+            <td class="num">{{ slot.count }}</td>
+            <td class="muted mono">{{ slot.eligible|join(', ') }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid two">
+  <div class="card">
+    <h2>Franchises</h2>
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Id</th><th>Name</th><th class="num">Blind-bid budget</th><th class="num">Waiver order</th></tr></thead>
+      <tbody>
+      {% for franchise in league.franchises %}
+        <tr>
+          <td class="mono">{{ franchise.id }}</td>
+          <td>{{ franchise.name or '?' }}{% if franchise.is_owner %}
+              <span class="pill good">yours</span>{% endif %}</td>
+          <td class="num">{% if franchise.bbid_budget is not none %}${{ '%g'|format(franchise.bbid_budget) }}
+              {% else %}<span class="muted">not reported</span>{% endif %}</td>
+          <td class="num">{{ franchise.waiver_order if franchise.waiver_order is not none else '—' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Scoring</h2>
+    <p><strong>{{ league.rules_parsed }}</strong> scoring rule(s) parsed.</p>
+    {% if league.rule_gaps %}
+      <p class="caveat"><strong>{{ league.rule_gaps|length }} rule(s) could not be parsed.</strong>
+         Scoring-dependent features are blocked rather than falling back to a standard
+         scoring system.</p>
+      <ul class="tight small">
+        {% for gap in league.rule_gaps %}<li class="caveat">{{ gap }}</li>{% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted small">Every rule MFL reported was parsed. Every downstream number --
+         lineup ranking, waiver value, trade fairness -- is computed from these.</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{% if status.blocked_features %}
+<div class="card">
+  <h2>Blocked features</h2>
+  {% for item in status.blocked_features %}
+    <pre class="block">{{ item.detail }}</pre>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Write capabilities</h2>
+  <p class="muted small">
+    A write capability with no documentation-verified endpoint refuses outright --
+    there is no default and no fallback.
+  </p>
+  <p><strong>{{ status.writes_verified }}/{{ status.writes_total }}</strong> verified.</p>
+  {% if status.unverified_writes %}
+    <ul class="tight small">
+      {% for capability in status.unverified_writes %}
+        <li class="caveat">{{ capability }} — blocked until verified</li>
+      {% endfor %}
+    </ul>
+    <p class="muted small">Run <em>Verify endpoints</em> from <a href="/actions">Actions</a>.</p>
+  {% endif %}
+</div>
+{% endblock %}

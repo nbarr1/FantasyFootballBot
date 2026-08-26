@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}mflbot{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#127944;</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/"><span class="dot offline" title="live connection"></span> mflbot</a>
+    <nav class="main">
+      <a href="/" class="{{ 'active' if path == '/' }}">Dashboard</a>
+      <a href="/recommendations" class="{{ 'active' if path.startswith('/recommendations') }}">Recommendations</a>
+      <a href="/team" class="{{ 'active' if path == '/team' }}">Team</a>
+      <a href="/league" class="{{ 'active' if path == '/league' }}">League</a>
+      <a href="/actions" class="{{ 'active' if path == '/actions' }}">Actions</a>
+      <a href="/audit" class="{{ 'active' if path == '/audit' }}">Audit</a>
+    </nav>
+    <span class="spacer"></span>
+    {% if status %}
+      <a class="pill pending" href="/recommendations?status=proposed">
+        awaiting you <b id="pending-count" data-count="{{ status.pending_count }}">{{ status.pending_count }}</b>
+      </a>
+    {% endif %}
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="ghost small" type="submit">Sign out</button>
+    </form>
+  </div>
+  {% if status %}
+  <div class="statusstrip">
+    <span class="pill">league <b>{{ status.league_id }}</b> · {{ status.season }}</span>
+    {% if status.league_name %}<span class="pill">{{ status.league_name }}</span>{% endif %}
+    <span class="pill {{ 'muted' if not status.week }}">week <b>{{ status.week or '?' }}</b></span>
+    <span class="pill {{ 'good' if status.authenticated else 'warn' }}">
+      {{ 'authenticated' if status.authenticated else 'not authenticated' }}
+    </span>
+    <span class="pill {{ 'good' if status.writes_verified == status.writes_total else 'warn' }}">
+      writes verified <b>{{ status.writes_verified }}/{{ status.writes_total }}</b>
+    </span>
+    {% if not status.submissions_enabled %}
+      <span class="pill warn">submissions disabled</span>
+    {% endif %}
+    {% if status.blocked_features %}
+      <a class="pill warn" href="/league">{{ status.blocked_features|length }} feature(s) blocked</a>
+    {% endif %}
+    {% if status.active_job %}
+      <span class="pill pending"><span class="spinner"></span> {{ status.active_job.label }}</span>
+    {% endif %}
+  </div>
+  {% endif %}
+</header>
+
+<main>
+  {% for flash in flashes %}
+    <div class="flash {{ flash.tone }}">{{ flash.message }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer>
+  <p><strong>Nothing here is sent to MyFantasyLeague unless you approve it, one action at a time.</strong>
+     Approving mints a token bound to that exact payload; editing an action invalidates it; silence
+     only ever leads to expiry.</p>
+</footer>
+
+<div id="toast"></div>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

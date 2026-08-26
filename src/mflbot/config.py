@@ -126,6 +126,23 @@ class NotifySettings:
 
 
 @dataclass(frozen=True, slots=True)
+class WebSettings:
+    """The dashboard (``bot serve``). Behaviour only -- the password is a secret
+    and comes from ``MFLBOT_WEB_PASSWORD``, never from this file."""
+
+    host: str = "127.0.0.1"
+    port: int = 8765
+    #: How long a signed-in browser session lasts before it must sign in again.
+    session_ttl_minutes: int = 720
+    #: When false, the dashboard records approvals but no web request can cause
+    #: an MFL write; `bot execute` submits them instead.
+    allow_submissions: bool = True
+    #: When false, the ingestion/analysis buttons are removed and the dashboard
+    #: is a viewer over whatever the scheduler produced.
+    allow_jobs: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class ScheduleSettings:
     league_state_poll_minutes: int = 45
     config_refresh_cron: str = "0 5 * * *"
@@ -144,7 +161,9 @@ class Config:
     news: NewsSettings = field(default_factory=NewsSettings)
     notify: NotifySettings = field(default_factory=NotifySettings)
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
-    #: Approval channel id: "cli" (default) or "web" (scaffolded dashboard).
+    web: WebSettings = field(default_factory=WebSettings)
+    #: Approval channel id: "cli" or "web". Both enforce the same rules; this
+    #: only selects which one the scheduler's notifications point at.
     approval_channel: str = "cli"
 
 
@@ -199,5 +218,6 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         news=_build(NewsSettings, _section(raw, "news"), "news"),
         notify=_build(NotifySettings, _section(raw, "notify"), "notify"),
         schedule=_build(ScheduleSettings, _section(raw, "schedule"), "schedule"),
+        web=_build(WebSettings, _section(raw, "web"), "web"),
         approval_channel=raw.get("approval_channel", "cli"),
     )

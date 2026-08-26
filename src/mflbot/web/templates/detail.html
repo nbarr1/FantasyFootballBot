@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% set r = recommendation %}
+{% block title %}{{ r.kind_label }} {{ r.id }} · mflbot{% endblock %}
+{% block content %}
+
+<div class="card-head">
+  <h1>{{ r.kind_label }}</h1>
+  <span class="pill {{ r.tone }}">{{ r.status }}</span>
+  <span class="pill {{ 'good' if r.confidence == 'high' else ('warn' if r.confidence == 'low' else '') }}">
+    {{ r.confidence }} confidence</span>
+  <span class="spacer"></span>
+  <span class="pill muted mono">{{ r.id }}</span>
+</div>
+
+{% if r.is_expired and r.status == 'proposed' %}
+  <div class="banner warn">
+    This expired {{ r.expires_at }} and can no longer be approved. Re-run the
+    analysis for a current recommendation.
+  </div>
+{% endif %}
+
+<div class="grid sidebar">
+  <div>
+    <div class="card">
+      <h2>Action</h2>
+      <p class="mono">{{ r.summary }}</p>
+
+      <h3>The exact request that would be sent to MFL</h3>
+      <p class="muted small">
+        You are approving these bytes, not a description of them. The approval token
+        signs a hash of this payload, so what you see and what is sent cannot drift.
+      </p>
+      <div class="card tight" style="background:var(--surface-2)">
+        {% for row in r.payload_rows %}
+          <div class="payload-row">
+            <span class="k">{{ row.key }}</span>
+            <span class="v">{{ row.value or '—' }}</span>
+            {% if row.names %}<span class="n">{{ row.names|join(', ') }}</span>{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+      <p class="muted small mono">capability {{ r.capability }} · payload sha256 {{ r.payload_hash[:16] }}…</p>
+    </div>
+
+    <div class="card">
+      <h2>Why</h2>
+      <pre class="block">{{ r.rationale }}</pre>
+
+      {% if r.caveats %}
+        <h3>Caveats</h3>
+        <ul class="tight">
+          {% for caveat in r.caveats %}<li class="caveat">{{ caveat }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if r.projections %}
+        <h3>Projections behind this</h3>
+        <div class="scroll-x">
+          <table>
+            <thead><tr><th>Player</th><th>Id</th><th class="num">Projected</th></tr></thead>
+            <tbody>
+              {% for row in r.projections %}
+                <tr>
+                  <td>{{ row.name }}</td>
+                  <td class="mono muted">{{ row.player_id }}</td>
+                  <td class="num">{{ '%.1f'|format(row.points) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="muted small">Projections are estimates, and are presented as estimates.</p>
+      {% endif %}
+
+      <h3>Evidence</h3>
+      <pre class="block">{{ r.evidence|tojson(indent=2) }}</pre>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Decide</h2>
+      <p class="muted small">
+        Created {{ r.created_at }} ·
+        {% if r.is_expired %}expired{% else %}expires
+          <span data-ts="{{ r.expires_at_iso }}">{{ r.expires_in }}</span>{% endif %}
+      </p>
+
+      {% if r.is_pending %}
+        <form method="post" action="/recommendations/{{ r.id }}/approve"
+              data-confirm="Approve this one action? Nothing is sent to MFL until you submit it.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="primary" type="submit" style="width:100%">Approve this action</button>
+        </form>
+        {% if allow_submissions %}
+        <form method="post" action="/recommendations/{{ r.id }}/approve" style="margin-top:.5rem"
+              data-confirm="Approve AND submit this to MFL now. This is a real write to your league. Continue?">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="submit_now" value="1">
+          <button type="submit" style="width:100%">Approve and submit now</button>
+        </form>
+        {% endif %}
+
+        <form method="post" action="/recommendations/{{ r.id }}/reject" style="margin-top:.75rem">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="field"><span>Reject with a note (optional)</span>
+            <input type="text" name="note" placeholder="why" style="width:100%"></label>
+          <button type="submit" style="width:100%">Reject</button>
+        </form>
+      {% elif r.is_approved %}
+        <div class="banner">
+          Approved. {% if token_id %}The token is bound to this payload and expires
+          <span data-ts="{{ token_expires_iso }}">{{ token_expires }}</span>.{% endif %}
+        </div>
+        {% if allow_submissions and token_id %}
+          <form method="post" action="/recommendations/{{ r.id }}/submit"
+                data-confirm="Submit this approved action to MFL now?">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="primary" type="submit" style="width:100%">Submit to MFL</button>
+          </form>
+          <p class="muted small">
+            The executor re-checks preconditions immediately before submitting and
+            abandons the action if the league moved since you approved it.
+          </p>
+        {% elif not allow_submissions %}
+          <p class="muted small">
+            This dashboard runs with submissions disabled. Run
+            <code class="mono">bot execute {{ r.id }} {{ token_id or '&lt;token&gt;' }}</code> to submit.
+          </p>
+        {% else %}
+          <p class="muted small">
+            No live approval token remains -- it was spent, it expired, or the payload
+            was edited after approval. Nothing was submitted.
+          </p>
+        {% endif %}
+      {% else %}
+        <p class="muted">
+          This is {{ r.status }}. Terminal states are not re-decidable; re-run the
+          analysis if you want a current recommendation.
+        </p>
+      {% endif %}
+    </div>
+
+    {% if r.is_pending and r.editable %}
+    <div class="card">
+      <h2>Edit before approving</h2>
+      <p class="muted small">
+        Editing changes the payload, which invalidates any approval already given for
+        the old one. Identity fields (league, franchise) are not editable -- changing
+        them would aim an approved action at a different team.
+      </p>
+      <form method="post" action="/recommendations/{{ r.id }}/edit">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% for field in r.editable %}
+          <label class="field">
+            <span>{{ field.label }}{% if field.is_list %} <em>(comma separated)</em>{% endif %}</span>
+            <input type="{{ 'number' if field.kind in ('int', 'float') else 'text' }}"
+                   {% if field.kind == 'float' %}step="any"{% endif %}
+                   name="field_{{ field.name }}" value="{{ field.value }}" style="width:100%">
+          </label>
+        {% endfor %}
+        <button type="submit" style="width:100%">Apply edit</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

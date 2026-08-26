@@ -1,22 +1,25 @@
-# systemd unit for the mflbot scheduler.
+# systemd unit for the mflbot dashboard, with the scheduler in the same process.
+#
+# Run THIS or mflbot.service, not both: they would be two processes writing to
+# one SQLite database.
 #
 # Install:
-#   sudo cp deploy/mflbot.service /etc/systemd/system/
+#   sudo cp deploy/mflbot-web.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now mflbot
+#   sudo systemctl enable --now mflbot-web
 #
-# This unit is the headless option: the scheduler alone, decided on from the
-# CLI. For the web dashboard (which can run the scheduler in the same process),
-# install deploy/mflbot-web.service instead -- run one or the other, not both,
-# or two processes will contend for the SQLite write lock.
+# Then open http://127.0.0.1:8765. Set MFLBOT_WEB_PASSWORD in the secrets file
+# below; without it the server prints a login link to the journal instead
+# (journalctl -u mflbot-web) which is valid only until the service restarts,
+# and it refuses to bind anything but loopback.
 #
-# The service only produces recommendations. Approving one is a separate,
-# interactive act, run as the same user:
-#   sudo -u mflbot /opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml pending
-#   sudo -u mflbot /opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml approve <id>
+# It is plain HTTP by design: reach it over an SSH tunnel
+#   ssh -N -L 8765:127.0.0.1:8765 you@host
+# or put a TLS-terminating reverse proxy in front of it. Approving still
+# produces one token per action, exactly as it does from the CLI.
 
 [Unit]
-Description=mflbot -- MyFantasyLeague monitoring and advisory bot
+Description=mflbot dashboard -- approvals, ingestion and analysis over HTTP
 Documentation=https://github.com/nbarr1/FantasyFootballBot
 After=network-online.target
 Wants=network-online.target
@@ -31,7 +34,8 @@ WorkingDirectory=/opt/mflbot
 # systemd reads it as root before dropping privileges.
 EnvironmentFile=/etc/mflbot/secrets.env
 
-ExecStart=/opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml run
+ExecStart=/opt/mflbot/.venv/bin/bot --config /opt/mflbot/config.toml serve \
+    --host 127.0.0.1 --port 8765 --with-scheduler
 
 Restart=on-failure
 RestartSec=30s
@@ -57,7 +61,7 @@ UMask=0077
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=mflbot
+SyslogIdentifier=mflbot-web
 
 [Install]
 WantedBy=multi-user.target

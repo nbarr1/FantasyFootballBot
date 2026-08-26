@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% from "_rec_card.html" import rec_card %}
+{% block title %}Dashboard · mflbot{% endblock %}
+{% block content %}
+
+{% if not status.config_synced %}
+  <div class="banner warn">
+    <strong>No league configuration is stored yet.</strong>
+    Run <em>Sync league config</em> below. Until it succeeds, every analysis is
+    blocked -- the bot will not assume a scoring system or a waiver type.
+  </div>
+{% elif not status.franchise_id %}
+  <div class="banner warn">
+    <strong>Your own franchise is not identified.</strong>
+    Run <em>Identify my franchise</em>, then set <code>league.franchise_id</code> in
+    config.toml. Nothing roster-relative can run until it is known, and the bot
+    will not guess which team is yours.
+  </div>
+{% endif %}
+
+<div class="grid sidebar">
+  <div>
+    <div class="card-head">
+      <h1>Awaiting your decision</h1>
+      <span class="pill pending">{{ pending|length }}</span>
+    </div>
+    {% if not pending %}
+      <div class="card"><p class="empty">
+        Nothing is pending. Silence never causes an action: un-answered
+        recommendations expire.
+      </p></div>
+    {% endif %}
+    {% for r in pending %}{{ rec_card(r) }}{% endfor %}
+
+    {% if recent %}
+      <h2 style="margin-top:1.5rem">Recently decided</h2>
+      <div class="card tight">
+        <div class="scroll-x">
+        <table>
+          <tbody>
+          {% for r in recent %}
+            <tr>
+              <td><a class="mono" href="/recommendations/{{ r.id }}">{{ r.id }}</a></td>
+              <td>{{ r.kind_label }}</td>
+              <td><span class="pill {{ r.tone }}">{{ r.status }}</span></td>
+              <td class="muted small hide-narrow">{{ r.summary|truncate(60) }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+  <div>
+    <div class="card">
+      <div class="card-head"><h2>League</h2><span class="spacer"></span>
+        <a class="small" href="/league">details</a></div>
+      <dl class="kv">
+        <dt>Waiver system</dt><dd>{{ league.waiver_system if league.synced else 'unknown' }}</dd>
+        <dt>Lineup lock</dt>
+        <dd>{% if league.synced and league.lineup_deadline_known %}
+              {{ league.lineup_deadline_in }} <span class="muted small">({{ league.lineup_deadline }})</span>
+            {% else %}<span class="muted">not reported by MFL</span>{% endif %}</dd>
+        <dt>Trade deadline</dt>
+        <dd>{% if league.synced and league.trade_deadline_known %}{{ league.trade_deadline }}
+            {% else %}<span class="muted">not reported by MFL</span>{% endif %}</dd>
+        <dt>Scoring rules</dt>
+        <dd>{% if league.synced %}{{ league.rules_parsed }} parsed{% if league.rule_gaps %},
+              <span class="caveat">{{ league.rule_gaps|length }} unparsed</span>{% endif %}
+            {% else %}<span class="muted">not synced</span>{% endif %}</dd>
+        <dt>Stored rows</dt><dd>{{ status.stored_rows }}</dd>
+      </dl>
+    </div>
+
+    {% if status.blocked_features %}
+      <div class="card">
+        <h2>Blocked features</h2>
+        <p class="muted small">These block rather than guess. Each one names what is missing.</p>
+        <ul class="tight small">
+          {% for item in status.blocked_features %}
+            <li><strong>{{ item.feature }}</strong>: <span class="caveat">{{ item.reason }}</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% if allow_jobs %}
+    <div class="card">
+      <div class="card-head"><h2>Quick actions</h2><span class="spacer"></span>
+        <a class="small" href="/actions">all actions</a></div>
+      <div class="btn-row">
+        {% for spec in specs if spec.id in ('poll', 'news', 'analyse-lineup', 'analyse-waivers') %}
+          <form class="action-form" method="post" action="/actions/{{ spec.id }}/run?next=/">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" title="{{ spec.description }}">{{ spec.label }}</button>
+          </form>
+        {% endfor %}
+      </div>
+      <div id="runs" class="small" style="margin:.6rem 0">
+        {% for run in runs %}
+          <div class="run" id="run-{{ run.id }}">
+            <span class="pill {{ {'succeeded':'good','failed':'bad','running':'pending'}.get(run.status,'muted') }}">{{ run.status }}</span>
+            <span class="cmd">{{ run.command }}</span>
+            {% if run.duration_seconds is not none %}<span class="muted small">{{ run.duration_seconds }}s</span>{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+      <div class="console" id="console" data-run-id="{{ runs[0].id if runs else '' }}"></div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

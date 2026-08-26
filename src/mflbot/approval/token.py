@@ -205,12 +205,35 @@ class TokenService:
                 f"no action was taken."
             )
 
+    def latest_for(self, recommendation_id: str) -> ApprovalToken | None:
+        """The most recent unconsumed, unexpired token for a recommendation.
+
+        The web dashboard splits approving from submitting into two clicks, so
+        it needs to find the token minted by the first one. This is a lookup,
+        not a second way to mint: it can only return a token an approval
+        channel already issued, and the executor still verifies the signature
+        and payload hash before spending it -- so a token found here for a
+        payload that has since been edited is refused exactly as it would be
+        from the CLI.
+        """
+        row = self.db.query_one(
+            "SELECT * FROM approval_tokens WHERE recommendation_id=? "
+            "AND consumed_at IS NULL ORDER BY issued_at DESC LIMIT 1",
+            (recommendation_id,),
+        )
+        if row is None:
+            return None
+        token = self._row_to_token(row)
+        return None if token.is_expired else token
+
     def load(self, token_id: str) -> ApprovalToken | None:
         row = self.db.query_one(
             "SELECT * FROM approval_tokens WHERE token_id=?", (token_id,)
         )
-        if row is None:
-            return None
+        return self._row_to_token(row) if row else None
+
+    @staticmethod
+    def _row_to_token(row) -> ApprovalToken:
         return ApprovalToken(
             token_id=row["token_id"],
             recommendation_id=row["recommendation_id"],

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_rec_card.html" import rec_card %}
+{% block title %}Recommendations · mflbot{% endblock %}
+{% block content %}
+<div class="card-head">
+  <h1>Recommendations</h1>
+  <span class="spacer"></span>
+  <div class="btn-row small">
+    <a class="btn {{ 'primary' if not selected_status }}" href="/recommendations">all</a>
+    {% for state in statuses %}
+      <a class="btn {{ 'primary' if selected_status == state }}"
+         href="/recommendations?status={{ state }}">{{ state }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if not recommendations %}
+  <div class="card"><p class="empty">
+    Nothing to show{{ ' with that status' if selected_status }}. Analysis runs produce
+    recommendations; start one from <a href="/actions">Actions</a>.
+  </p></div>
+{% endif %}
+
+{% for r in recommendations %}{{ rec_card(r, compact=true) }}{% endfor %}
+{% endblock %}
