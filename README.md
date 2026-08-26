@@ -8,6 +8,9 @@ recommendation:
 2. Trade proposals, and responses to offers you receive
 3. Weekly starting lineups
 
+It runs as a **web application** (`bot serve`) or from the **command line** --
+the same bot either way, over the same database, enforcing the same rules.
+
 **It never submits anything to MFL without your explicit, per-action approval.**
 That is a design invariant, not a setting. There is no auto mode, no "approve
 all", and no timeout that turns silence into action.
@@ -98,7 +101,7 @@ The only synthetic data in this repository is in `tests/`, clearly labelled, and
 git clone https://github.com/nbarr1/FantasyFootballBot
 cd FantasyFootballBot
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e '.[solver,dev]'      # 'solver' adds exact ILP lineup solving
+pip install -e '.[solver,web,dev]'  # 'solver': exact ILP lineups; 'web': the dashboard
 ```
 
 Requires Python 3.11+.
@@ -140,7 +143,70 @@ bot news
 bot analyse lineup             # or: waivers, trades
 ```
 
+## The web application
+
+```bash
+export MFLBOT_WEB_PASSWORD=...        # or leave unset for a printed login link
+bot serve                             # http://127.0.0.1:8765
+```
+
+Everything the CLI does, in a browser, plus live output:
+
+| Page | What it is for |
+|---|---|
+| Dashboard | What is awaiting your decision, what is blocked and why, the league's real deadlines, and quick actions |
+| Recommendations | Every recommendation, filterable by state; each one opens onto its full rationale, evidence, caveats and literal payload |
+| Team | Your roster and the free-agent pool with this week's projections (a player with no projection shows `--`, never `0.0`) |
+| League | The parsed configuration -- slots, franchises, scoring rules, unparsed rules, blocked features, endpoint verification |
+| Actions | Run ingestion, analysis and verification; watch the command's output stream in; start or stop the scheduler |
+| Audit | Every write ever attempted, with the request sent and MFL's reply |
+
+Approving is two clicks by default, and they are different clicks: **Approve**
+records the decision and mints the token; **Submit to MFL** spends it. (There is
+an *Approve and submit now* button for when you have already decided, and
+`--no-submit` for when you want the dashboard never to be able to write at all.)
+
+### It authenticates, always
+
+The dashboard can mint approval tokens, so "bound to localhost" is not an access
+control -- any other process on the machine, any container sharing the network
+namespace, and anything on the far end of an SSH port-forward can reach a
+localhost port. So:
+
+- **A login is required.** Set `MFLBOT_WEB_PASSWORD` (compared as a scrypt hash
+  held in memory, never written to disk), or leave it unset and the server
+  generates an access token at startup and prints the login link (valid while
+  that process runs). There is no anonymous mode -- `WebSecurity` raises rather
+  than construct one.
+- **Sessions live on the server.** The cookie carries an opaque random id and
+  nothing else. Signing out, or restarting the server, really does end them.
+- **Every mutating request needs a CSRF token**, plus an Origin check when the
+  browser sends one.
+- **Failed logins are throttled**, and a non-loopback bind without a password is
+  refused outright.
+
+It speaks plain HTTP by design. Reach it over an SSH tunnel
+(`ssh -N -L 8765:127.0.0.1:8765 you@host`) or put a TLS-terminating proxy in
+front of it.
+
+### What the buttons can and cannot do
+
+The action buttons run the *same* `bot` subcommands the CLI runs, through the
+same argument parser, one at a time on a worker thread -- there is one
+implementation of "sync the config", not two that can drift. Which commands they
+may run is an allowlist (`mflbot/web/jobs.py`) containing only read and analysis
+commands; `approve`, `execute`, `reject` and `edit` are excluded by name, and a
+test fails if that stops being true. A decision is something you make on one
+recommendation, never a button that fires a batch.
+
+Output is passed through the same redactor the log formatters use before it
+reaches a browser.
+
 ## Deciding
+
+Either surface. In the dashboard, every pending recommendation has its
+rationale, its evidence, its caveats and the literal payload on one page, with
+Approve / Reject / Edit next to them. From the CLI:
 
 ```bash
 bot pending                    # everything awaiting a decision
@@ -158,12 +224,14 @@ Projections are presented as estimates, because that is what they are.
 ## Running continuously
 
 ```bash
-bot run                        # scheduler in the foreground
+bot run                              # scheduler alone, in the foreground
+bot serve --with-scheduler           # scheduler + dashboard, one process
 ```
 
 The scheduler polls, analyses and notifies. It **never** submits. Approving is
-always a separate, interactive act. See [`deploy/`](deploy/) for the systemd
-unit and Dockerfile.
+always a separate, interactive act. Run one of the two, not both: two processes
+against one SQLite file contend for its write lock. See "Where to run it" below,
+and [`deploy/`](deploy/) for systemd units (one per shape) and the Dockerfile.
 
 | Job | Cadence |
 |---|---|
@@ -174,6 +242,58 @@ unit and Dockerfile.
 | Waiver analysis | weekly, plus on any roster or free-agent change |
 | Trade analysis | weekly, plus on an incoming offer |
 | Lineup analysis | T-48h, T-12h, T-2h from your league's **real** deadline |
+
+## Where to run it
+
+This is a stateful daemon that happens to serve a web page, not a web page that
+happens to do work. Anywhere it runs needs three things:
+
+1. **A persistent disk.** The SQLite file holds every recommendation, approval
+   token and audit row. Lose it and you lose the audit trail.
+2. **A process that stays up.** Lineup analysis is scheduled from your league's
+   *real* deadline (T-48h, T-12h, T-2h), computed at runtime — not on a fixed
+   clock someone else can trigger.
+3. **One process at a time.** Sessions, the live event stream, the response
+   cache and the MFL rate limiter are all per-process. Two copies against one
+   database means a doubled request rate against MFL and a write lock they will
+   fight over.
+
+Anything always-on satisfies that: a small VPS, a Raspberry Pi at home, or a
+container host with a persistent volume (Fly.io, Railway, Render). See
+[`deploy/`](deploy/) for the systemd units and the Dockerfile.
+
+For reaching it from elsewhere, the dashboard serves plain HTTP on loopback by
+default and expects one of:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 you@host    # then http://127.0.0.1:8765
+```
+
+Tailscale or a Cloudflare Tunnel work the same way. To expose it directly,
+`MFLBOT_WEB_PASSWORD` becomes mandatory (`bot serve` refuses a non-loopback bind
+without one) and a TLS-terminating reverse proxy is on you.
+
+### Not serverless
+
+Vercel, Netlify Functions, Lambda and friends are the wrong shape, despite
+running FastAPI perfectly well:
+
+| What the bot needs | What a function platform gives |
+|---|---|
+| A SQLite file that persists | An ephemeral filesystem; `/tmp`, per invocation |
+| A scheduler holding deadline-relative timers | Cron on a fixed expression, plus `waitUntil` tied to one response |
+| In-process sessions, SSE bus, rate limiter | As many instances as there is traffic, sharing none of it |
+| Jobs that outlive a request (`bot sync-players`) | A `maxDuration` ceiling |
+
+The rate limiter is the one that would bite quietly rather than loudly: MFL
+throttles per client, and this bot's pacing is enforced once per process. Spread
+across instances it stops being a limit at all.
+
+A serverless port is possible, but it is a re-architecture rather than a deploy:
+implement the Postgres backend (`StorageSettings.dsn` is a declared, unimplemented
+field), move sessions and the event bus to a shared store, replace the scheduler
+with cron endpoints, and give up live-streamed job output. For one manager
+watching one league, that buys nothing a $5 VPS does not already do.
 
 ## Rate limits and MFL's terms
 
@@ -216,6 +336,19 @@ Secrets come from the environment only (see `.env.example`), are never stored in
 the database, never written to a log — every formatter routes through a
 redactor — and never rendered by the approval interface.
 
+### Storage
+
+SQLite, because this watches one league on one host and the whole dataset is
+small. `[storage] engine` accepts only `"sqlite"`; anything else raises rather
+than silently falling back.
+
+Swapping in Postgres is a matter of writing one more backend, not editing
+analysis code: everything above the database talks to `Repositories`, never to
+SQL. It means implementing a `Database`-shaped class against the `dsn` field
+that `StorageSettings` already declares, and porting `storage/schema.sql`. The
+analysis engines, the approval flow and the executor are untouched by it. Until
+someone does, `engine = "postgres"` refuses at startup and says so.
+
 ## Architecture
 
 ```
@@ -227,7 +360,9 @@ mflbot/
   analysis/     rules parser, valuation core, lineup optimiser, waivers, trades
   recommend/    recommendation records and the literal action payloads
   approval/     ApprovalChannel interface, token service, CLI channel,
-                web dashboard (scaffold)
+                web channel (delegates to the CLI one, so they cannot drift)
+  web/          the dashboard: routes, templates, sessions/CSRF, the
+                allowlisted job bridge, the server-sent-events stream
   execute/      preconditions, submission, confirmation, audit
   notify/       webhook transport; email and telegram stubs
   schedule/     APScheduler jobs
@@ -244,8 +379,6 @@ daily refresh updates one object and every recommendation moves with it.
   `ROUND` number this bot has no way to determine automatically; rather than
   guess, the whole waiver system stays blocked for leagues that use it. FCFS
   and blind-bid leagues are fully supported. See "Endpoint verification" above.
-- **The web dashboard is a scaffold.** It runs, but has no CSRF protection and no
-  auth beyond binding to localhost. The CLI is the supported approval surface.
 - **`bot validate-scoring` is partial.** A full replay needs per-player stat
   lines; MFL's `playerScores` returns points already computed. The command
   verifies that every scored position has parseable rules and says plainly what
@@ -258,11 +391,17 @@ daily refresh updates one object and every recommendation moves with it.
   when an offer contains them.
 - **Email and Telegram notifiers are stubs**, as are the paid news providers.
   The webhook transport (which works with Discord) is implemented.
+- **The dashboard has one account and no TLS.** It is a single-user tool: one
+  shared secret, no roles, no per-user audit beyond `web:` on the token. It
+  serves plain HTTP and expects a tunnel or a reverse proxy in front of it for
+  anything other than localhost. Sessions and the run history live in the
+  server process, so a restart signs you out and clears the console (what a run
+  *produced* is in the database, and survives).
 
 ## Tests
 
 ```bash
-pytest              # 176 tests
+pytest              # 213 tests
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`
@@ -271,6 +410,10 @@ by accident passes locally and fails in CI. CI runs the bare console script for
 exactly that reason.
 
 The ones that encode the safety properties: `test_write_isolation.py`,
-`test_approval.py`, `test_executor.py`, `test_no_seed_data.py`, and
+`test_approval.py`, `test_executor.py`, `test_no_seed_data.py`,
 `test_end_to_end.py` — which walks the entire pipeline against a simulated MFL
-and asserts that nothing is submitted without an approval.
+and asserts that nothing is submitted without an approval — and
+`test_web_app.py`, which asserts the same things through the dashboard: no
+session, no CSRF token, or a cross-site Origin and the approval does not
+happen; an edit after approving invalidates the token; and no action button can
+reach a command that writes.

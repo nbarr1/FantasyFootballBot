@@ -1,8 +1,12 @@
 # docker compose -f deploy/docker-compose.yml up -d
 #
-# Approve from the host:
+# Then open http://127.0.0.1:8765 and sign in with MFLBOT_WEB_PASSWORD.
+# The CLI still works against the same state:
 #   docker compose -f deploy/docker-compose.yml exec bot bot pending
 #   docker compose -f deploy/docker-compose.yml exec bot bot approve <id>
+#
+# One container runs both the dashboard and the scheduler, deliberately: two
+# processes against one SQLite file would contend for its write lock.
 
 services:
   bot:
@@ -24,4 +28,11 @@ services:
       # generated key, and a new key invalidates outstanding approvals.
       MFLBOT_APPROVAL_SECRET: "${MFLBOT_APPROVAL_SECRET:?set this in deploy/.env}"
       MFLBOT_WEBHOOK_URL: "${MFLBOT_WEBHOOK_URL:-}"
-    command: ["run"]
+      # Signs you in to the dashboard. Required, because the container serves
+      # on 0.0.0.0 and anything that reaches it could approve real MFL writes.
+      MFLBOT_WEB_PASSWORD: "${MFLBOT_WEB_PASSWORD:?set this in deploy/.env}"
+    ports:
+      # Bound to loopback on the host: this is plain HTTP. To reach it from
+      # another machine, tunnel over SSH or put a TLS proxy in front.
+      - "127.0.0.1:8765:8765"
+    command: ["serve", "--host", "0.0.0.0", "--with-scheduler"]

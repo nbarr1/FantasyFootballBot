@@ -1,8 +1,11 @@
 """The :class:`ApprovalChannel` interface.
 
 A channel is the surface where a human sees a recommendation and decides. Two
-implementations ship: a CLI (the working default) and a local web dashboard
-(scaffolded). Swapping between them changes no analysis or execution code.
+implementations ship, both fully supported: a CLI
+(:mod:`mflbot.approval.cli_channel`) and the web dashboard
+(:mod:`mflbot.approval.web_channel`, served by :mod:`mflbot.web`). The web one
+delegates its decision logic to the CLI one, so the two cannot diverge.
+Swapping between them changes no analysis or execution code.
 
 Every channel must honour the same contract:
 

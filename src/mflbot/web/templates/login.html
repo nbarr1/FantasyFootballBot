@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in · mflbot</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="card">
+    <h1>mflbot</h1>
+    <p class="muted small">
+      This dashboard can approve real actions on your MyFantasyLeague team, so it
+      asks who you are even on localhost.
+    </p>
+    {% if error %}<div class="flash bad">{{ error }}</div>{% endif %}
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{ request.query_params.get('next', '/') }}">
+      <label class="field">
+        <span>{{ 'Password' if mode == 'password' else 'Access token' }}</span>
+        <input type="password" name="secret" autocomplete="current-password"
+               autofocus required style="width:100%">
+      </label>
+      <button class="primary" type="submit" style="width:100%">Sign in</button>
+    </form>
+    <p class="muted small" style="margin-top:1rem">
+      {% if mode == 'token' %}
+        No <code>MFLBOT_WEB_PASSWORD</code> is set, so the server generated an access
+        token and printed a login link when it started. Copy the token from that
+        link, or set a password and restart.
+      {% else %}
+        The password comes from <code>MFLBOT_WEB_PASSWORD</code> in the server's
+        environment. It is never stored on disk.
+      {% endif %}
+    </p>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Team · mflbot{% endblock %}
+{% block content %}
+<div class="card-head">
+  <h1>Your roster</h1>
+  <span class="spacer"></span>
+  <form method="get" action="/team" class="btn-row small">
+    <label class="small muted">week
+      <input type="number" name="week" value="{{ team.week or '' }}" min="1" style="width:5rem">
+    </label>
+    <button type="submit">Show</button>
+  </form>
+</div>
+
+{% if not team.franchise_id %}
+  <div class="banner warn">
+    Your franchise id is not known, so there is no roster to show. Run
+    <em>Identify my franchise</em> from <a href="/actions">Actions</a>.
+  </div>
+{% elif not team.roster %}
+  <div class="banner warn">
+    No roster is stored. Run <em>Poll league state</em> from <a href="/actions">Actions</a>.
+  </div>
+{% else %}
+  <div class="card">
+    <div class="card-head">
+      <h2>Franchise {{ team.franchise_id }}</h2>
+      <span class="pill">{{ team.roster|length }} players</span>
+      {% if not team.week %}
+        <span class="pill warn">current week unknown</span>
+      {% elif team.roster_projected is none %}
+        <span class="pill warn">no week {{ team.week }} projections stored</span>
+      {% else %}
+        <span class="pill">week {{ team.week }} projected <b>{{ team.roster_projected }}</b>
+          <span class="muted">from {{ team.projected_players }} of {{ team.roster|length }}</span></span>
+        <span class="pill {{ 'good' if team.projection_coverage >= 0.9 else 'warn' }}">
+          projections for {{ (team.projection_coverage * 100)|round|int }}% of the roster</span>
+      {% endif %}
+    </div>
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Player</th><th>Pos</th><th>Team</th><th>Status</th><th class="num">Projected</th></tr></thead>
+      <tbody>
+        {% for row in team.roster %}
+          <tr>
+            <td>{{ row.name }} <span class="muted mono small">{{ row.player_id }}</span></td>
+            <td>{{ row.position }}</td>
+            <td>{{ row.nfl_team }}</td>
+            <td class="{{ 'caveat' if row.status }}">{{ row.status or '' }}</td>
+            <td class="num {{ 'muted' if row.projection is none }}">{{ row.projection_display }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">
+      A player with no projection shows “--”, never 0.0. Treating an unknown as zero
+      would look like a judgement the bot has not made -- and such a player is never
+      the one it suggests you drop.
+    </p>
+  </div>
+{% endif %}
+
+<div class="card">
+  <div class="card-head">
+    <h2>Free agents</h2>
+    <span class="pill">{{ team.free_agent_total }} available</span>
+    {% if team.free_agents|length < team.free_agent_total %}
+      <span class="pill muted">showing the top {{ team.free_agents|length }} by projection</span>
+    {% endif %}
+  </div>
+  {% if not team.free_agents %}
+    <p class="empty">No free-agent pool is stored. Run <em>Poll league state</em>.</p>
+  {% else %}
+    <div class="scroll-x">
+    <table>
+      <thead><tr><th>Player</th><th>Pos</th><th>Team</th><th class="num">Projected</th></tr></thead>
+      <tbody>
+        {% for row in team.free_agents %}
+          <tr>
+            <td>{{ row.name }} <span class="muted mono small">{{ row.player_id }}</span></td>
+            <td>{{ row.position }}</td>
+            <td>{{ row.nfl_team }}</td>
+            <td class="num {{ 'muted' if row.projection is none }}">{{ row.projection_display }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">
+      This is the pool, not advice. Add/drop suggestions come from
+      <em>Analyse waivers</em>, which applies your configured thresholds and shows
+      its reasoning.
+    </p>
+  {% endif %}
+</div>
+{% endblock %}

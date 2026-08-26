@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Actions · mflbot{% endblock %}
+{% block content %}
+<h1>Actions</h1>
+<p class="muted small">
+  Each button runs the same <code>bot</code> command the CLI runs, on the server, one
+  at a time. None of them can submit anything to MFL: ingestion and analysis produce
+  recommendations, and only an explicit approval authorises a write.
+</p>
+
+{% if not allow_jobs %}
+  <div class="banner warn">
+    This dashboard was started with <code>--no-jobs</code>. It can show what is
+    stored, but not run anything.
+  </div>
+{% else %}
+
+{% set groups = specs|groupby('group') %}
+{% for group, items in groups %}
+  <h2>{{ group }}</h2>
+  <div class="action-grid" style="margin-bottom:1rem">
+    {% for spec in items %}
+      <div class="action-tile">
+        <strong>{{ spec.label }}</strong>
+        <span class="desc">{{ spec.description }}</span>
+        <form class="action-form" method="post" action="/actions/{{ spec.id }}/run">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% for param in spec.params %}
+            <label class="field">
+              <span>{{ param.label }}{% if not param.required %} (optional){% endif %}</span>
+              <input type="{{ 'number' if param.kind == 'int' else 'text' }}"
+                     name="param_{{ param.name }}"
+                     {% if param.name == 'week' and status.week %}placeholder="{{ status.week }}"{% endif %}
+                     title="{{ param.help }}">
+            </label>
+          {% endfor %}
+          <button type="submit">Run</button>
+        </form>
+        <code>{{ spec.command }}</code>
+      </div>
+    {% endfor %}
+  </div>
+{% endfor %}
+
+<div class="grid sidebar">
+  <div class="card">
+    <div class="card-head"><h2>Output</h2><span class="spacer"></span>
+      <span class="muted small">streams live</span></div>
+    <div class="console" id="console" data-run-id="{{ runs[0].id if runs else '' }}"></div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Scheduler</h2>
+      <p class="muted small">
+        Polls, ingests and analyses on the league's own calendar. It never submits:
+        the scheduler has no write client at all.
+      </p>
+      <p>
+        <span class="pill {{ 'good' if scheduler_running else 'muted' }}">
+          {{ 'running' if scheduler_running else 'stopped' }}</span>
+      </p>
+      <form method="post" action="/scheduler/{{ 'stop' if scheduler_running else 'start' }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="{{ '' if scheduler_running else 'primary' }}" type="submit">
+          {{ 'Stop scheduler' if scheduler_running else 'Start scheduler' }}</button>
+      </form>
+      {% if scheduler_jobs %}
+        <table style="margin-top:.6rem">
+          <thead><tr><th>Job</th><th>Next run</th></tr></thead>
+          <tbody>
+            {% for job in scheduler_jobs %}
+              <tr><td class="mono small">{{ job.id }}</td><td class="small">{{ job.next_run }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Recent runs</h2>
+      <div id="runs" class="small">
+        {% if not runs %}<p class="empty">Nothing has run yet this session.</p>{% endif %}
+        {% for run in runs %}
+          <div class="run" id="run-{{ run.id }}">
+            <span class="pill {{ {'succeeded':'good','failed':'bad','running':'pending'}.get(run.status,'muted') }}">{{ run.status }}</span>
+            <span class="cmd">{{ run.command }}</span>
+            {% if run.duration_seconds is not none %}<span class="muted small">{{ run.duration_seconds }}s</span>{% endif %}
+          </div>
+        {% endfor %}
+      </div>
+      <p class="muted small">Run history is in memory. What a run <em>produced</em> is in the
+         database and on the other pages.</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Audit · mflbot{% endblock %}
+{% block content %}
+<h1>Write audit trail</h1>
+<p class="muted small">
+  Every write ever attempted -- refused, failed or confirmed -- with the request that
+  was sent and what MFL said back. Rows are written before and after each attempt, so
+  a crash mid-submission still leaves a record.
+</p>
+
+{% if not entries %}
+  <div class="card"><p class="empty">
+    No API writes have been attempted. That is the expected state until you approve
+    and submit something.
+  </p></div>
+{% else %}
+<div class="card tight">
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr><th>When</th><th>Outcome</th><th>Capability</th><th>Recommendation</th><th>Request</th></tr>
+    </thead>
+    <tbody>
+      {% for entry in entries %}
+        <tr>
+          <td class="nowrap mono small">{{ entry.at }}</td>
+          <td><span class="pill {{ entry.tone }}">{{ entry.outcome }}</span></td>
+          <td class="mono small">{{ entry.capability }}</td>
+          <td class="mono small">
+            {% if entry.recommendation_id %}
+              <a href="/recommendations/{{ entry.recommendation_id }}">{{ entry.recommendation_id }}</a>
+            {% else %}—{% endif %}
+          </td>
+          <td class="mono small">{{ entry.request }}
+            {% if entry.response %}<div class="muted">→ {{ entry.response|truncate(160) }}</div>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

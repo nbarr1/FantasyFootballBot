@@ -17,9 +17,16 @@ dependencies = [
 # Exact lineup optimisation. Without this the optimiser falls back to a greedy
 # solver that refuses to answer when it cannot prove greedy is optimal.
 solver = ["pulp>=2.8"]
-# Local approval dashboard (Component 4, alternative channel).
-web = ["fastapi>=0.110", "uvicorn>=0.29", "jinja2>=3.1"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+# The web dashboard (`bot serve`). python-multipart is what parses the form
+# posts behind every approve/reject/edit button, so it is a hard requirement
+# rather than an optional nicety.
+web = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
 
 [project.scripts]
 bot = "mflbot.cli:main"
@@ -28,7 +35,12 @@ bot = "mflbot.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-mflbot = ["storage/*.sql", "approval/web/templates/*.html", "templates/*.toml"]
+mflbot = [
+    "storage/*.sql",
+    "web/templates/*.html",
+    "web/static/*",
+    "templates/*.toml",
+]
 
 [tool.ruff]
 target-version = "py311"
