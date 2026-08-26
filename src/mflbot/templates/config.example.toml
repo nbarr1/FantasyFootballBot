@@ -8,7 +8,8 @@
 #
 # Secrets are never read from this file. See .env.example.
 
-# Approval surface: "cli" (supported default) or "web" (scaffolded dashboard).
+# Approval surface: "cli" or "web" (`bot serve`). Both enforce identical rules;
+# this only selects which one notifications point you at.
 # Must stay above the first [table]: in TOML a bare key after a table header
 # belongs to that table, not to the top level.
 approval_channel = "cli"
@@ -89,3 +90,23 @@ config_refresh_cron = "0 5 * * *"
 player_db_refresh_cron = "30 5 * * *"
 waiver_analysis_cron = "0 22 * * 1"   # Monday 22:00 UTC, ahead of typical waivers
 trade_analysis_cron = "0 20 * * 3"    # Wednesday 20:00 UTC
+
+
+# The web dashboard (`bot serve`): the interactive surface over everything the
+# CLI does -- status, league config, roster, recommendations, ingestion and
+# analysis runs, approvals and the audit trail.
+#
+# The dashboard always requires a login. Set MFLBOT_WEB_PASSWORD in the
+# environment (never here -- this file holds no secrets); with none set, the
+# server generates an access token at startup and prints a login link.
+[web]
+host = "127.0.0.1"
+port = 8765
+# How long a signed-in browser session lasts, in minutes.
+session_ttl_minutes = 720
+# false: approvals are still recorded and tokens still minted, but no web
+# request can cause an MFL write -- `bot execute` submits them instead.
+allow_submissions = true
+# false: removes the ingestion/analysis buttons, leaving a read-only viewer
+# over whatever the scheduler produced.
+allow_jobs = true

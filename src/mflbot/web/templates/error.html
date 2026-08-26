@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} · mflbot{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>{{ code }}</h1>
+  <p>{{ message }}</p>
+  <p><a class="btn" href="/">Back to the dashboard</a></p>
+</div>
+{% endblock %}

@@ -14,6 +14,9 @@ Analysis (produces recommendations; never submits)
 Approval and execution (the only path to an MFL write)
     pending, show, approve, reject, edit, execute
 
+Surfaces
+    run (scheduler), serve (web dashboard)
+
 Verification and audit
     validate-scoring, audit
 
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from importlib import resources
 from pathlib import Path
@@ -518,22 +522,81 @@ def cmd_run(args, context: BotContext) -> int:
     return 0
 
 
+#: Loopback addresses. Binding anywhere else exposes the dashboard to the
+#: network over plain HTTP, so it requires a password rather than a token
+#: printed to one terminal.
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+WEB_PASSWORD_ENV = "MFLBOT_WEB_PASSWORD"
+
+
 def cmd_serve(args, context: BotContext) -> int:
-    """Run the (scaffolded) local approval dashboard."""
+    """Run the dashboard: the interactive surface over the whole bot."""
     try:
         import uvicorn
     except ImportError:
         print("The dashboard needs the web extra: pip install 'mflbot[web]'")
         return 1
-    from .approval.web.app import build_app
+    from .web import WebSecurity, build_app
 
-    print(
-        "NOTE: the dashboard is a scaffold -- no CSRF protection and no auth "
-        "beyond binding to localhost. `bot pending` is the supported surface."
+    settings = context.config.web
+    host = args.host or settings.host
+    port = args.port or settings.port
+    allow_submissions = settings.allow_submissions and not args.no_submit
+    allow_jobs = settings.allow_jobs and not args.no_jobs
+
+    password = os.environ.get(WEB_PASSWORD_ENV) or None
+    if password is None and host not in LOOPBACK_HOSTS:
+        print(
+            f"Refusing to bind {host} without a password. On a non-loopback "
+            f"address the dashboard is reachable over plain HTTP by anything on "
+            f"the network, and anything that reaches it can approve real MFL "
+            f"writes.\n"
+            f"  Set {WEB_PASSWORD_ENV}, or serve on 127.0.0.1 and reach it "
+            f"through an SSH tunnel or a TLS-terminating reverse proxy.",
+            file=sys.stderr,
+        )
+        return 1
+
+    security = WebSecurity.create(
+        password, session_ttl_minutes=settings.session_ttl_minutes
     )
-    app = build_app(context.store, context.tokens, executor=None,
-                    notifier=context.notifier)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    app = build_app(
+        context,
+        security,
+        allow_submissions=allow_submissions,
+        allow_jobs=allow_jobs,
+        start_scheduler=args.with_scheduler,
+    )
+    if args.with_scheduler:
+        context.client.login()
+
+    print(f"mflbot dashboard on http://{host}:{port}")
+    if security.mode == "password":
+        print(f"  Sign in with the password from ${WEB_PASSWORD_ENV}.")
+    else:
+        print("  No password set, so this is the login link for this run:")
+        print(f"    {security.login_url(host, port)}")
+        print(
+            f"  It is valid while this process runs. Set ${WEB_PASSWORD_ENV} to "
+            f"sign in with a password that survives a restart."
+        )
+    print(
+        f"  Submissions to MFL: {'enabled' if allow_submissions else 'DISABLED'}. "
+        f"Ingestion and analysis: {'enabled' if allow_jobs else 'DISABLED'}."
+    )
+    if args.with_scheduler:
+        print("  Scheduler: started with the server. It polls and analyses; it "
+              "never submits.")
+    print("  Nothing is submitted to MFL without a per-action approval.")
+    if host not in LOOPBACK_HOSTS:
+        print(
+            "  WARNING: not bound to loopback and serving plain HTTP. Put a "
+            "TLS-terminating proxy in front of it.",
+            file=sys.stderr,
+        )
+
+    uvicorn.run(app, host=host, port=port, log_level="info")
     return 0
 
 
@@ -653,9 +716,27 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_run
     )
 
-    p = sub.add_parser("serve", help="run the local approval dashboard (scaffold)")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8765)
+    p = sub.add_parser("serve", help="run the web dashboard")
+    p.add_argument("--host", help="overrides [web] host (default 127.0.0.1)")
+    p.add_argument("--port", type=int, help="overrides [web] port (default 8765)")
+    p.add_argument(
+        "--no-submit",
+        action="store_true",
+        help="record approvals but never let a web request write to MFL",
+    )
+    p.add_argument(
+        "--no-jobs",
+        action="store_true",
+        help="hide the ingestion and analysis actions; view stored data only",
+    )
+    p.add_argument(
+        "--with-scheduler",
+        action="store_true",
+        help="also run the scheduler in this process, so one process both "
+             "watches the league and serves the dashboard (use this instead of "
+             "running `bot run` alongside: two processes contend for SQLite's "
+             "write lock)",
+    )
     p.set_defaults(func=cmd_serve)
 
     return parser

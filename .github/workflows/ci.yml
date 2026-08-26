@@ -38,7 +38,7 @@ jobs:
         # this way.
         run: |
           python -m pip install --upgrade pip
-          pip install '.[solver,dev]'
+          pip install '.[solver,web,dev]'
 
       - name: Tests
         run: pytest -q
@@ -66,6 +66,12 @@ jobs:
             || { echo "::error::a fresh install did not report an empty player table"; exit 1; }
           grep -q 'Write capabilities verified: 0/6' status.txt \
             || { echo "::error::write capabilities were not blocked on a fresh install"; exit 1; }
+
+          # The dashboard must refuse to expose itself on a non-loopback
+          # address without a password -- see cmd_serve.
+          if MFLBOT_APPROVAL_SECRET=ci-smoke-key bot serve --host 0.0.0.0 --port 8765; then
+            echo "::error::bot serve bound a public address with no password"; exit 1
+          fi
 
   lint:
     name: ruff
