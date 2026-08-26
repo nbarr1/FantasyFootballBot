@@ -41,7 +41,8 @@ class Database:
             return cls(settings.path)
         raise ConfigError(
             f"Storage engine '{settings.engine}' is not implemented. "
-            "SQLite is the shipped backend; see README for the Postgres swap path."
+            "SQLite is the shipped backend; see \"Storage\" in the README for what "
+            "swapping in another one involves."
         )
 
     def migrate(self) -> None:
