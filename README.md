@@ -230,8 +230,8 @@ bot serve --with-scheduler           # scheduler + dashboard, one process
 
 The scheduler polls, analyses and notifies. It **never** submits. Approving is
 always a separate, interactive act. Run one of the two, not both: two processes
-against one SQLite file contend for its write lock. See [`deploy/`](deploy/) for
-systemd units (one per shape) and the Dockerfile.
+against one SQLite file contend for its write lock. See "Where to run it" below,
+and [`deploy/`](deploy/) for systemd units (one per shape) and the Dockerfile.
 
 | Job | Cadence |
 |---|---|
@@ -242,6 +242,58 @@ systemd units (one per shape) and the Dockerfile.
 | Waiver analysis | weekly, plus on any roster or free-agent change |
 | Trade analysis | weekly, plus on an incoming offer |
 | Lineup analysis | T-48h, T-12h, T-2h from your league's **real** deadline |
+
+## Where to run it
+
+This is a stateful daemon that happens to serve a web page, not a web page that
+happens to do work. Anywhere it runs needs three things:
+
+1. **A persistent disk.** The SQLite file holds every recommendation, approval
+   token and audit row. Lose it and you lose the audit trail.
+2. **A process that stays up.** Lineup analysis is scheduled from your league's
+   *real* deadline (T-48h, T-12h, T-2h), computed at runtime — not on a fixed
+   clock someone else can trigger.
+3. **One process at a time.** Sessions, the live event stream, the response
+   cache and the MFL rate limiter are all per-process. Two copies against one
+   database means a doubled request rate against MFL and a write lock they will
+   fight over.
+
+Anything always-on satisfies that: a small VPS, a Raspberry Pi at home, or a
+container host with a persistent volume (Fly.io, Railway, Render). See
+[`deploy/`](deploy/) for the systemd units and the Dockerfile.
+
+For reaching it from elsewhere, the dashboard serves plain HTTP on loopback by
+default and expects one of:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 you@host    # then http://127.0.0.1:8765
+```
+
+Tailscale or a Cloudflare Tunnel work the same way. To expose it directly,
+`MFLBOT_WEB_PASSWORD` becomes mandatory (`bot serve` refuses a non-loopback bind
+without one) and a TLS-terminating reverse proxy is on you.
+
+### Not serverless
+
+Vercel, Netlify Functions, Lambda and friends are the wrong shape, despite
+running FastAPI perfectly well:
+
+| What the bot needs | What a function platform gives |
+|---|---|
+| A SQLite file that persists | An ephemeral filesystem; `/tmp`, per invocation |
+| A scheduler holding deadline-relative timers | Cron on a fixed expression, plus `waitUntil` tied to one response |
+| In-process sessions, SSE bus, rate limiter | As many instances as there is traffic, sharing none of it |
+| Jobs that outlive a request (`bot sync-players`) | A `maxDuration` ceiling |
+
+The rate limiter is the one that would bite quietly rather than loudly: MFL
+throttles per client, and this bot's pacing is enforced once per process. Spread
+across instances it stops being a limit at all.
+
+A serverless port is possible, but it is a re-architecture rather than a deploy:
+implement the Postgres backend (`StorageSettings.dsn` is a declared, unimplemented
+field), move sessions and the event bus to a shared store, replace the scheduler
+with cron endpoints, and give up live-streamed job output. For one manager
+watching one league, that buys nothing a $5 VPS does not already do.
 
 ## Rate limits and MFL's terms
 
@@ -283,6 +335,19 @@ explaining what each one does.
 Secrets come from the environment only (see `.env.example`), are never stored in
 the database, never written to a log — every formatter routes through a
 redactor — and never rendered by the approval interface.
+
+### Storage
+
+SQLite, because this watches one league on one host and the whole dataset is
+small. `[storage] engine` accepts only `"sqlite"`; anything else raises rather
+than silently falling back.
+
+Swapping in Postgres is a matter of writing one more backend, not editing
+analysis code: everything above the database talks to `Repositories`, never to
+SQL. It means implementing a `Database`-shaped class against the `dsn` field
+that `StorageSettings` already declares, and porting `storage/schema.sql`. The
+analysis engines, the approval flow and the executor are untouched by it. Until
+someone does, `engine = "postgres"` refuses at startup and says so.
 
 ## Architecture
 
@@ -336,7 +401,7 @@ daily refresh updates one object and every recommendation moves with it.
 ## Tests
 
 ```bash
-pytest              # 209 tests
+pytest              # 213 tests
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`
