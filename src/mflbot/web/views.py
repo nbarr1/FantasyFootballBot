@@ -203,6 +203,34 @@ def recommendation_ids(recommendations) -> list[str]:
 # status, league, team, audit
 # ---------------------------------------------------------------------------
 
+def watchdog_view(context) -> dict[str, Any]:
+    """Whether the scheduler's jobs are keeping up.
+
+    Surfacing this in the dashboard is the point of the watchdog: an empty
+    "awaiting your decision" list means one of two very different things, and
+    this is what tells them apart without leaving the page.
+    """
+    from ..schedule.heartbeat import check
+
+    report = check(context.repos, context.config)
+    return {
+        "healthy": report.healthy,
+        "summary": report.summary(),
+        "stale_count": len(report.stale),
+        "entries": [
+            {
+                "label": entry.job.label,
+                "state": entry.state,
+                "detail": entry.describe(),
+                "stale": entry.stale,
+                "warming_up": entry.warming_up,
+                "last_success_iso": _iso(entry.last_success),
+            }
+            for entry in report.entries
+        ],
+    }
+
+
 def status_view(context, *, jobs=None, submissions_enabled: bool = True) -> dict[str, Any]:
     """Everything `bot status` prints, plus what the header needs."""
     registry = context.registry
@@ -245,6 +273,7 @@ def status_view(context, *, jobs=None, submissions_enabled: bool = True) -> dict
         "pending_count": len(pending),
         "active_job": active.as_dict(include_output=False) if active else None,
         "config_synced": settings is not None,
+        "watchdog": watchdog_view(context),
     }
 
 

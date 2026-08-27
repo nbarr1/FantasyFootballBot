@@ -84,6 +84,13 @@ enabled = true
 
 
 [schedule]
+# How often the watchdog checks that the other jobs are keeping up -- and, while
+# they are, checks in with MFLBOT_HEARTBEAT_URL. See "Trusting the silence" in
+# the README.
+heartbeat_minutes = 15
+# A job counts as stalled once this many of its own intervals pass without a
+# success. Above 1 so a single transient failure is not an alert.
+heartbeat_stale_multiplier = 3.0
 # Cron expressions are evaluated in UTC.
 league_state_poll_minutes = 45
 config_refresh_cron = "0 5 * * *"

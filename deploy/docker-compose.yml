@@ -28,6 +28,8 @@ services:
       # generated key, and a new key invalidates outstanding approvals.
       MFLBOT_APPROVAL_SECRET: "${MFLBOT_APPROVAL_SECRET:?set this in deploy/.env}"
       MFLBOT_WEBHOOK_URL: "${MFLBOT_WEBHOOK_URL:-}"
+      # A missed check-in here is how you learn the container stopped.
+      MFLBOT_HEARTBEAT_URL: "${MFLBOT_HEARTBEAT_URL:-}"
       # Signs you in to the dashboard. Required, because the container serves
       # on 0.0.0.0 and anything that reaches it could approve real MFL writes.
       MFLBOT_WEB_PASSWORD: "${MFLBOT_WEB_PASSWORD:?set this in deploy/.env}"

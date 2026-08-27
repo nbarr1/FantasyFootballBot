@@ -149,6 +149,13 @@ class ScheduleSettings:
     player_db_refresh_cron: str = "30 5 * * *"
     waiver_analysis_cron: str = "0 22 * * 1"
     trade_analysis_cron: str = "0 20 * * 3"
+    #: How often the watchdog checks whether the other jobs are keeping up, and
+    #: checks in with MFLBOT_HEARTBEAT_URL while they are.
+    heartbeat_minutes: int = 15
+    #: A job counts as stalled once this many of its own intervals have passed
+    #: without a success. Above 1 so that a single transient failure -- one
+    #: refused request, one flaky minute of network -- is not an alert.
+    heartbeat_stale_multiplier: float = 3.0
 
 
 @dataclass(frozen=True, slots=True)

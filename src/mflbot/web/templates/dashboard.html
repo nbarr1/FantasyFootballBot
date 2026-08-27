@@ -74,6 +74,35 @@
       </dl>
     </div>
 
+    <div class="card">
+      <div class="card-head">
+        <h2>Watchdog</h2>
+        <span class="spacer"></span>
+        <span class="pill {{ 'good' if status.watchdog.healthy else 'bad' }}">
+          {{ 'keeping up' if status.watchdog.healthy else status.watchdog.stale_count ~ ' stale' }}
+        </span>
+      </div>
+      <p class="muted small">
+        An empty list above means "no moves worth making" only if the bot is
+        actually watching. This is how you tell.
+      </p>
+      <table>
+        <tbody>
+          {% for entry in status.watchdog.entries %}
+            <tr>
+              <td class="small">{{ entry.label }}</td>
+              <td class="small {{ 'caveat' if entry.stale }} {{ 'muted' if entry.warming_up }}"
+                  title="{{ entry.detail }}">
+                {% if entry.last_success_iso and not entry.stale %}
+                  <span data-ts="{{ entry.last_success_iso }}">{{ entry.state }}</span>
+                {% else %}{{ entry.state }}{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
     {% if status.blocked_features %}
       <div class="card">
         <h2>Blocked features</h2>
