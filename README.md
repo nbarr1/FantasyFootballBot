@@ -90,7 +90,10 @@ Consequences you will notice, all deliberate:
 - A player with no projection is never silently treated as scoring zero, and is
   never the one the bot suggests you drop.
 
-`bot status` and `bot config-summary` list exactly what is blocked and why.
+`bot status` and `bot config-summary` list exactly what is blocked and why —
+and `bot status` also reports when each scheduled job last succeeded, so an
+empty recommendation list can be read as "nothing worth doing" rather than
+"nothing is running".
 
 The only synthetic data in this repository is in `tests/`, clearly labelled, and
 `tests/test_no_seed_data.py` asserts it never leaks into the application.
@@ -419,8 +422,10 @@ mflbot/
   web/          the dashboard: routes, templates, sessions/CSRF, the
                 allowlisted job bridge, the server-sent-events stream
   execute/      preconditions, submission, confirmation, audit
-  notify/       webhook transport; email and telegram stubs
-  schedule/     APScheduler jobs
+  notify/       webhook transport, the dead man's check-in ping; email and
+                telegram stubs
+  schedule/     APScheduler jobs, and the watchdog that reports when they
+                stop keeping up
 ```
 
 Everything downstream — lineup ranking, waiver value, trade fairness — routes
