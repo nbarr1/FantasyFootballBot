@@ -90,7 +90,10 @@ Consequences you will notice, all deliberate:
 - A player with no projection is never silently treated as scoring zero, and is
   never the one the bot suggests you drop.
 
-`bot status` and `bot config-summary` list exactly what is blocked and why.
+`bot status` and `bot config-summary` list exactly what is blocked and why —
+and `bot status` also reports when each scheduled job last succeeded, so an
+empty recommendation list can be read as "nothing worth doing" rather than
+"nothing is running".
 
 The only synthetic data in this repository is in `tests/`, clearly labelled, and
 `tests/test_no_seed_data.py` asserts it never leaks into the application.
@@ -242,6 +245,56 @@ and [`deploy/`](deploy/) for systemd units (one per shape) and the Dockerfile.
 | Waiver analysis | weekly, plus on any roster or free-agent change |
 | Trade analysis | weekly, plus on an incoming offer |
 | Lineup analysis | T-48h, T-12h, T-2h from your league's **real** deadline |
+| Watchdog | every 15 min — checks the jobs above are keeping up, and checks in while they are |
+
+## Trusting the silence
+
+The bot's central promise is that silence never causes an action. The cost of
+that promise is that silence is ambiguous: "no moves worth making this week" and
+"the machine lost power on Saturday" both arrive as nothing at all. A user who
+cannot tell those apart goes back to checking manually, which is the habit the
+bot exists to replace.
+
+Two mechanisms, because there are two failure modes and neither covers the other.
+
+**The bot is running, but its work is not.** MFL rejected the login, the network
+is down, an ingest job has been throwing for six hours. The scheduler is alive,
+so it can notice this itself: every job records when it last succeeded, and the
+watchdog compares that against how often that job is *configured* to run. Poll
+every 15 minutes and a stall is flagged sooner than if you poll hourly — the
+threshold comes from your cadence, not a constant. You get one notification when
+it goes stale and one when it recovers, never a stream.
+
+**The bot is not running at all.** Power cut, OOM kill, closed laptop. Nothing
+inside the process can report this — code that is not executing cannot send a
+message. So set a check-in URL:
+
+```bash
+export MFLBOT_HEARTBEAT_URL=https://hc-ping.com/your-uuid   # or any equivalent
+```
+
+The bot pings it on each watchdog cycle, and the *absence* of pings is what
+raises the alarm. One rule makes the two mechanisms compose:
+
+> **It checks in only while healthy.**
+
+A dead man's switch that keeps checking in while the bot is broken is worse than
+none — it actively reassures you that a failing thing is fine. So a stalled job
+withholds the check-in, and your monitor escalates on the same signal it uses for
+a dead machine.
+
+Both are visible without waiting for an alert: `bot status` lists every job and
+when it last succeeded, `bot heartbeat` prints the same report and **exits 2 when
+something is stale** (so an external cron can act on it), and the dashboard
+carries a Watchdog card plus a header pill when anything is behind.
+
+```bash
+bot heartbeat            # exit 0 healthy, 2 stale
+bot heartbeat --ping     # and check in, if healthy
+```
+
+This matters most when you host the bot at home, where nobody else is watching
+the box — see below.
 
 ## Where to run it
 
@@ -261,6 +314,11 @@ happens to do work. Anywhere it runs needs three things:
 Anything always-on satisfies that: a small VPS, a Raspberry Pi at home, or a
 container host with a persistent volume (Fly.io, Railway, Render). See
 [`deploy/`](deploy/) for the systemd units and the Dockerfile.
+
+Home hosting has one failure mode a managed host does not: nobody is watching
+the box, so a power cut on Saturday reaches you as silence. Set
+`MFLBOT_HEARTBEAT_URL` (see "Trusting the silence" above) and that stops being
+true — it is the difference between a Pi being a good idea and a liability.
 
 For reaching it from elsewhere, the dashboard serves plain HTTP on loopback by
 default and expects one of:
@@ -364,8 +422,10 @@ mflbot/
   web/          the dashboard: routes, templates, sessions/CSRF, the
                 allowlisted job bridge, the server-sent-events stream
   execute/      preconditions, submission, confirmation, audit
-  notify/       webhook transport; email and telegram stubs
-  schedule/     APScheduler jobs
+  notify/       webhook transport, the dead man's check-in ping; email and
+                telegram stubs
+  schedule/     APScheduler jobs, and the watchdog that reports when they
+                stop keeping up
 ```
 
 Everything downstream — lineup ranking, waiver value, trade fairness — routes
@@ -401,7 +461,7 @@ daily refresh updates one object and every recommendation moves with it.
 ## Tests
 
 ```bash
-pytest              # 213 tests
+pytest              # 227 tests
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`
@@ -413,7 +473,9 @@ The ones that encode the safety properties: `test_write_isolation.py`,
 `test_approval.py`, `test_executor.py`, `test_no_seed_data.py`,
 `test_end_to_end.py` — which walks the entire pipeline against a simulated MFL
 and asserts that nothing is submitted without an approval — and
-`test_web_app.py`, which asserts the same things through the dashboard: no
+`test_heartbeat.py`, which asserts a stalled bot stops checking in and that the
+check-in URL never reaches a log; and `test_web_app.py`, which asserts the same
+things through the dashboard: no
 session, no CSRF token, or a cross-site Origin and the approval does not
 happen; an edit after approving invalidates the token; and no action button can
 reach a command that writes.

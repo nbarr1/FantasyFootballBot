@@ -18,7 +18,7 @@ Surfaces
     run (scheduler), serve (web dashboard)
 
 Verification and audit
-    validate-scoring, audit
+    validate-scoring, audit, heartbeat
 
 The split matters: no command under "Analysis" can write to MFL, and every
 command that can requires a recommendation you have explicitly approved.
@@ -203,6 +203,21 @@ def cmd_status(args, context: BotContext) -> int:
         print("\nBlocked features:")
         for item in blocked:
             print(f"  {item.feature}: {item.reason}")
+
+    from .schedule.heartbeat import check
+
+    report = check(context.repos, context.config)
+    print(f"\nScheduler jobs   : {report.summary()}")
+    for entry in report.entries:
+        print(f"  {entry.job.label:<28} {entry.state}")
+
+    from .notify.deadman import DeadManPing
+
+    pinger = DeadManPing()
+    configured, reason = pinger.is_configured()
+    target = pinger.safe_target if configured else f"not configured ({reason})"
+    print(f"Heartbeat check-in: {target}")
+    pinger.close()
 
     pending = context.store.pending()
     print(f"\nAwaiting your decision: {len(pending)}")
@@ -485,6 +500,43 @@ def cmd_validate_scoring(args, context: BotContext) -> int:
     return 0
 
 
+def cmd_heartbeat(args, context: BotContext) -> int:
+    """Report whether the scheduler's jobs are keeping up.
+
+    Exits non-zero when something is stale, so an external cron can act on it:
+
+        */15 * * * * bot heartbeat || curl -fsS "$ALERT_URL"
+
+    That external invocation is worth having even with the scheduler's own
+    watchdog running. This command can only tell you about a bot that is
+    running; a bot that has stopped cannot report anything, which is what
+    MFLBOT_HEARTBEAT_URL exists to cover.
+    """
+    from .schedule.heartbeat import check
+
+    report = check(context.repos, context.config)
+    print(report.render())
+
+    if args.ping:
+        from .notify.deadman import DeadManPing
+
+        pinger = DeadManPing()
+        configured, reason = pinger.is_configured()
+        if not configured:
+            print(f"\nNot checking in: {reason}")
+        elif report.healthy:
+            ok = pinger.ping(report.summary())
+            print(f"\nChecked in with {pinger.safe_target}: {'ok' if ok else 'FAILED'}")
+        else:
+            print(
+                f"\nDeliberately not checking in with {pinger.safe_target}: a "
+                f"check-in while stalled would tell your monitor that a broken "
+                f"bot is fine."
+            )
+        pinger.close()
+    return 0 if report.healthy else 2
+
+
 def cmd_audit(args, context: BotContext) -> int:
     entries = context.repos.audit_entries(limit=args.limit)
     if not entries:
@@ -707,6 +759,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("validate-scoring", help="check the scoring parser against real data")
     p.add_argument("--week", type=int)
     p.set_defaults(func=cmd_validate_scoring)
+
+    p = sub.add_parser(
+        "heartbeat",
+        help="report whether the scheduler's jobs are keeping up (exit 2 if not)",
+    )
+    p.add_argument(
+        "--ping",
+        action="store_true",
+        help="also check in with MFLBOT_HEARTBEAT_URL, but only if healthy",
+    )
+    p.set_defaults(func=cmd_heartbeat)
 
     p = sub.add_parser("audit", help="show the API write audit trail")
     p.add_argument("--limit", type=int, default=50)
