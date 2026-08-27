@@ -48,6 +48,9 @@
     {% if status.blocked_features %}
       <a class="pill warn" href="/league">{{ status.blocked_features|length }} feature(s) blocked</a>
     {% endif %}
+    {% if not status.watchdog.healthy %}
+      <a class="pill bad" href="/">watchdog: {{ status.watchdog.stale_count }} job(s) stale</a>
+    {% endif %}
     {% if status.active_job %}
       <span class="pill pending"><span class="spinner"></span> {{ status.active_job.label }}</span>
     {% endif %}

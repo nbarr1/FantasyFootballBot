@@ -18,6 +18,10 @@ Live scoring watch           inside NFL game windows only
 Analysis jobs produce recommendations and notify. **No job executes anything.**
 The scheduler has no access to a write client; execution happens only when a
 human approves through :mod:`mflbot.approval`.
+
+Every job's outcome is recorded as it runs, which is what
+:mod:`mflbot.schedule.heartbeat` reads to tell a quiet week apart from a
+stopped bot.
 """
 
 from __future__ import annotations
@@ -35,6 +39,22 @@ class JobRunner:
     """Holds the wiring each job needs and exposes them as callables."""
 
     context: object  # mflbot.cli.BotContext
+    #: Built on first use so that constructing a JobRunner stays free of I/O.
+    _heartbeat_impl: object = None
+
+    @property
+    def _heartbeat(self):
+        if self._heartbeat_impl is None:
+            from ..notify.deadman import DeadManPing
+            from .heartbeat import Heartbeat
+
+            self._heartbeat_impl = Heartbeat(
+                self.context.repos,
+                self.context.config,
+                self.context.notifier,
+                ping=DeadManPing(),
+            )
+        return self._heartbeat_impl
 
     # -- ingestion ---------------------------------------------------------
 
@@ -101,6 +121,10 @@ class JobRunner:
         count = self.context.store.expire_stale()
         return f"{count} recommendation(s) expired"
 
+    def heartbeat(self) -> str:
+        """Check that the other jobs are keeping up; check in while they are."""
+        return self._heartbeat.run().summary()
+
     def watch_live_scoring(self) -> str:
         """Poll live scoring during a game window.
 
@@ -142,15 +166,22 @@ def build_scheduler(runner: JobRunner, config):
     except ImportError as exc:  # pragma: no cover
         raise ImportError("APScheduler is required: pip install apscheduler") from exc
 
+    from .heartbeat import record_failure, record_success
+
     scheduler = BackgroundScheduler(timezone="UTC")
 
     def register(name: str, func: Callable[[], str], trigger) -> None:
         def wrapped() -> None:
+            # Every outcome is recorded here rather than in each job, so a job
+            # added later is watched by the heartbeat without anyone
+            # remembering to instrument it.
             try:
                 result = func()
                 log.info("job %s: %s", name, result)
-            except Exception:  # noqa: BLE001 - one bad job must not kill the loop
+                record_success(runner.context.repos, name)
+            except Exception as exc:  # noqa: BLE001 - one bad job must not kill the loop
                 log.exception("job %s failed", name)
+                record_failure(runner.context.repos, name, f"{type(exc).__name__}: {exc}")
 
         scheduler.add_job(wrapped, trigger, id=name, replace_existing=True,
                           max_instances=1, coalesce=True)
@@ -170,6 +201,10 @@ def build_scheduler(runner: JobRunner, config):
              CronTrigger.from_crontab(schedule.trade_analysis_cron, timezone="UTC"))
     register("expire_recommendations", runner.expire_recommendations,
              IntervalTrigger(minutes=15))
+    # The watchdog is registered like any other job, so a stall in the watchdog
+    # itself shows up in the same place as any other stalled job.
+    register("heartbeat", runner.heartbeat,
+             IntervalTrigger(minutes=schedule.heartbeat_minutes))
 
     # Lineup analysis is scheduled relative to the league's actual deadline,
     # which is only known once the config has been synced. The job re-registers

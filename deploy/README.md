@@ -103,6 +103,20 @@ the published port.
 `deploy/state/` holds the database, response cache and pending recommendations.
 Back it up; losing it loses your audit trail.
 
+## Notice when it stops
+
+Whichever shape you run, set a check-in URL before you stop thinking about it:
+
+```
+MFLBOT_HEARTBEAT_URL=https://hc-ping.com/your-uuid
+```
+
+The bot pings it on every watchdog cycle while its jobs are keeping up, and
+deliberately stops while they are not. A missed check-in is then the alarm for
+both failure modes — a stalled bot and a dead one — and it is the only one that
+survives the machine losing power. `bot heartbeat` exits 2 when something is
+stale, if you would rather drive it from a cron you already have.
+
 ## Before either will do anything
 
 Run these once, in order:
