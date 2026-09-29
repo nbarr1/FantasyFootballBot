@@ -95,6 +95,7 @@ heartbeat_stale_multiplier = 3.0
 league_state_poll_minutes = 45
 config_refresh_cron = "0 5 * * *"
 player_db_refresh_cron = "30 5 * * *"
+projections_refresh_cron = "45 5 * * *"   # this week's and next week's projections
 waiver_analysis_cron = "0 22 * * 1"   # Monday 22:00 UTC, ahead of typical waivers
 trade_analysis_cron = "0 20 * * 3"    # Wednesday 20:00 UTC
 

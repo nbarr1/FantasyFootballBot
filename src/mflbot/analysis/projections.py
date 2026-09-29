@@ -10,7 +10,7 @@ turn "unknown" into "bad", which is a different claim entirely.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..errors import Missing
 from ..ingest.scores import MFL_PROJECTION_SOURCE
@@ -24,9 +24,17 @@ class ProjectionProvider:
     league_id: str
     season: int
     source: str = MFL_PROJECTION_SOURCE
+    #: One database read per week for the life of this provider. A provider is
+    #: built per analysis run, so nothing here outlives the data it came from;
+    #: without it, rest-of-season totals re-read a whole week per player.
+    _weeks: dict[int, dict[str, float]] = field(default_factory=dict, repr=False)
 
     def week(self, week: int) -> dict[str, float]:
-        return self.repos.load_projections(self.league_id, self.season, week, self.source)
+        if week not in self._weeks:
+            self._weeks[week] = self.repos.load_projections(
+                self.league_id, self.season, week, self.source
+            )
+        return self._weeks[week]
 
     def for_player(self, player_id: str, week: int) -> float | Missing:
         points = self.week(week).get(player_id)

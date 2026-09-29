@@ -129,10 +129,23 @@
           </p>
         {% else %}
           <p class="muted small">
-            No live approval token remains -- it was spent, it expired, or the payload
-            was edited after approval. Nothing was submitted.
+            No live approval token remains -- it expired before it was submitted.
+            Nothing was submitted. Approve again if this is still what you want.
           </p>
+          <form method="post" action="/recommendations/{{ r.id }}/approve"
+                data-confirm="Approve this one action again? Nothing is sent to MFL until you submit it.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="primary" type="submit" style="width:100%">Approve again</button>
+          </form>
         {% endif %}
+
+        <form method="post" action="/recommendations/{{ r.id }}/reject" style="margin-top:.75rem"
+              data-confirm="Withdraw your approval and reject this action? Its approval stops working immediately.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label class="field"><span>Changed your mind? Reject with a note (optional)</span>
+            <input type="text" name="note" placeholder="why" style="width:100%"></label>
+          <button type="submit" style="width:100%">Withdraw approval and reject</button>
+        </form>
       {% else %}
         <p class="muted">
           This is {{ r.status }}. Terminal states are not re-decidable; re-run the
@@ -141,13 +154,14 @@
       {% endif %}
     </div>
 
-    {% if r.is_pending and r.editable %}
+    {% if (r.is_pending or r.is_approved) and r.editable %}
     <div class="card">
-      <h2>Edit before approving</h2>
+      <h2>Edit before {{ 'submitting' if r.is_approved else 'approving' }}</h2>
       <p class="muted small">
-        Editing changes the payload, which invalidates any approval already given for
-        the old one. Identity fields (league, franchise) are not editable -- changing
-        them would aim an approved action at a different team.
+        Editing changes the payload and withdraws any approval already given for the
+        old one: the recommendation goes back to awaiting your decision. Identity
+        fields (league, franchise) are not editable -- changing them would aim an
+        approved action at a different team.
       </p>
       <form method="post" action="/recommendations/{{ r.id }}/edit">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

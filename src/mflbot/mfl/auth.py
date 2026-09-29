@@ -38,8 +38,10 @@ ENV_SECRETS_FILE = "MFLBOT_SECRETS_FILE"
 #: Cookie name MFL sets for an authenticated user session.
 SESSION_COOKIE_NAME = "MFL_USER_ID"
 
+#: Credential-bearing query parameters. TOKEN is the dashboard's access-token
+#: login link (``/login?token=...``), which a web server's access log records.
 _SECRET_PARAM_RE = re.compile(
-    r"(?i)\b(APIKEY|PASSWORD|USERNAME)=([^&\s]+)"
+    r"(?i)\b(APIKEY|PASSWORD|USERNAME|TOKEN)=([^&\s]+)"
 )
 
 

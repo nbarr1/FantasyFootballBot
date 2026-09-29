@@ -72,18 +72,22 @@ class PlayerCrosswalk:
         self, name: str, position: str | None = None, nfl_team: str | None = None
     ) -> str | None:
         candidates = self._by_name.get(normalise_name(name), [])
-        if not candidates:
-            return None
-        if len(candidates) == 1:
-            return candidates[0].player_id
-        narrowed = candidates
-        if position:
-            narrowed = [c for c in narrowed if c.position == position] or narrowed
-        if nfl_team:
-            narrowed = [c for c in narrowed if c.nfl_team == nfl_team] or narrowed
-        if len(narrowed) == 1:
-            return narrowed[0].player_id
-        log.debug("Ambiguous crosswalk for %r (%s candidates)", name, len(narrowed))
+        # A name is only a lead. A candidate counts once its position or its
+        # team agrees too -- a lone name match is not corroboration, however
+        # few players share the name.
+        corroborated = [
+            c for c in candidates
+            if (position and c.position == position) or (nfl_team and c.nfl_team == nfl_team)
+        ]
+        if len(corroborated) > 1 and position and nfl_team:
+            corroborated = [
+                c for c in corroborated if c.position == position and c.nfl_team == nfl_team
+            ]
+        if len(corroborated) == 1:
+            return corroborated[0].player_id
+        if candidates:
+            log.debug("No corroborated crosswalk for %r (%s candidates)", name,
+                      len(corroborated) or len(candidates))
         return None
 
 

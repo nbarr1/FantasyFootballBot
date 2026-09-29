@@ -1,9 +1,14 @@
 """Turns an approved recommendation into a confirmed MFL action.
 
 The executor consumes ``(recommendation, approval_token)`` pairs and nothing
-else. Around the submission itself it does three things that matter as much as
+else. Around the submission itself it does four things that matter as much as
 the write:
 
+0. **Confirms the approval still stands.** The recommendation is re-read from
+   the store, and it must be ``approved`` *now* -- not when the caller loaded
+   it -- and the token must have been issued for this recommendation. A
+   rejected, edited or already-executed recommendation is refused, whatever
+   token accompanies it.
 1. **Re-validates preconditions immediately before submitting.** Approval
    happened at some earlier moment; the world may have moved. If it has, the
    action is abandoned rather than adapted.
@@ -24,7 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..approval.token import ApprovalToken
-from ..errors import ApprovalError, PreconditionFailed, TransportError
+from ..errors import MFLBotError, PreconditionFailed, TransportError
 from ..recommend.models import (
     AddDropPayload,
     LineupPayload,
@@ -148,15 +153,25 @@ class Executor:
                 f"{settings.trade_deadline:%Y-%m-%d %H:%M UTC}."
             )
 
+    def _pending_offers(self, franchise_id: str):
+        """The pending trades involving ``franchise_id``, parsed and fresh."""
+        from ..ingest.league_state import parse_pending_trades
+
+        offers, _ = parse_pending_trades(
+            self._read.pending_trades(franchise=franchise_id, force_refresh=True)
+        )
+        return offers
+
     def _check_offer_still_open(self, payload: TradeResponsePayload) -> None:
         try:
-            pending = self._read.pending_trades(franchise=payload.franchise_id)
+            offers = self._pending_offers(payload.franchise_id)
         except Exception as exc:  # noqa: BLE001
             raise PreconditionFailed(
                 f"Could not confirm offer {payload.offer_id} is still open: {exc}"
             ) from exc
-        blob = str(pending)
-        if payload.offer_id not in blob:
+        # An exact id match on a parsed offer. A text search of the response
+        # would find "12" inside "123", or inside a timestamp.
+        if not any(o.trade_id == payload.offer_id for o in offers):
             raise PreconditionFailed(
                 f"Trade offer {payload.offer_id} is no longer pending -- it was "
                 f"withdrawn or already resolved. Nothing was submitted."
@@ -167,9 +182,52 @@ class Executor:
 
     # -- execution ----------------------------------------------------------
 
+    def authorisation_refusal(
+        self, recommendation: Recommendation | None, token: ApprovalToken
+    ) -> str | None:
+        """Why this token may not drive this recommendation, or None if it may."""
+        if recommendation is None:
+            return "That recommendation is not on record; nothing was submitted."
+        if getattr(token, "recommendation_id", None) != recommendation.id:
+            return (
+                f"Approval token {token.token_id} was issued for recommendation "
+                f"{getattr(token, 'recommendation_id', '?')}, not {recommendation.id}. "
+                f"An approval authorises only the recommendation it was given for. "
+                f"Nothing was submitted."
+            )
+        if recommendation.status != RecommendationStatus.APPROVED:
+            return (
+                f"Recommendation {recommendation.id} is {recommendation.status}, not "
+                f"approved, so it cannot be submitted. Nothing was submitted."
+            )
+        return None
+
+    def _refuse(self, recommendation_id: str, token, capability, summary: str,
+                reason: str) -> ExecutionOutcome:
+        """Record a refusal that sent nothing and leaves the recommendation as it was."""
+        self._repos.audit(
+            recommendation_id=recommendation_id,
+            token_id=getattr(token, "token_id", None),
+            capability=str(capability) if capability else None,
+            request_summary=summary,
+            outcome="refused",
+            response_summary=reason,
+        )
+        return ExecutionOutcome(recommendation_id, submitted=False, confirmed=False,
+                                message=reason)
+
     def execute(
         self, recommendation: Recommendation, token: ApprovalToken
     ) -> ExecutionOutcome:
+        # Decide on the stored recommendation, never the caller's copy: it may
+        # have been loaded before an approval, a rejection or an edit.
+        current = self._store.get(recommendation.id)
+        refusal = self.authorisation_refusal(current, token)
+        if refusal is not None:
+            source = current or recommendation
+            return self._refuse(recommendation.id, token, source.payload.capability,
+                                source.payload.describe(), refusal)
+        recommendation = current
         payload = recommendation.payload
         capability = payload.capability
 
@@ -199,7 +257,9 @@ class Executor:
 
         try:
             result = self._write.submit(payload, token)
-        except (ApprovalError, TransportError) as exc:
+        except TransportError as exc:
+            # Raised after the token was spent: the request may or may not have
+            # reached MFL, so the action is over and a retry needs a new approval.
             self._repos.audit(
                 recommendation_id=recommendation.id,
                 token_id=token.token_id,
@@ -212,6 +272,13 @@ class Executor:
             return ExecutionOutcome(
                 recommendation.id, submitted=False, confirmed=False, message=str(exc)
             )
+        except MFLBotError as exc:
+            # Everything else the write client raises -- a refused token, an
+            # unverified endpoint, an incomplete payload, no write session --
+            # happens before anything is sent. Nothing about the action itself
+            # failed, so its status is left as it was.
+            return self._refuse(recommendation.id, token, capability,
+                                payload.describe(), f"Not submitted: {exc}")
 
         confirmed, note = (False, "not checked")
         if result.succeeded:
@@ -291,23 +358,42 @@ class Executor:
         return True, "roster reflects the add/drop"
 
     def _confirm_lineup(self, payload: LineupPayload) -> tuple[bool, str]:
+        """Read the submitted lineup back and compare it with what was sent.
+
+        Checking that the starters are on the roster proves nothing -- they
+        were before the write too. What counts is that MFL now lists exactly
+        these players as this franchise's starters for this week.
+        """
+        from ..ingest.league_state import submitted_starters
+
         response = self._read.export(
-            "rosters", L=payload.league_id, FRANCHISE=payload.franchise_id,
-            force_refresh=True,
+            "weeklyResults", L=payload.league_id, W=payload.week, force_refresh=True,
         ).payload
-        blob = str(response)
-        missing = [pid for pid in payload.starter_ids if pid not in blob]
-        if missing:
-            return False, f"{len(missing)} intended starter(s) not found in the re-read"
-        return True, "all intended starters are present on the franchise roster read"
+        now_starting = set(submitted_starters(response, payload.franchise_id))
+        if not now_starting:
+            return False, "the submitted lineup could not be read back"
+        intended = set(payload.starter_ids)
+        if now_starting == intended:
+            return True, "MFL lists exactly the intended starters"
+        missing, extra = intended - now_starting, now_starting - intended
+        return False, (
+            f"MFL's starters differ from what was sent: missing "
+            f"{sorted(missing) or 'none'}, unexpected {sorted(extra) or 'none'}"
+        )
 
     def _confirm_trade(self, payload) -> tuple[bool, str]:
-        pending = self._read.pending_trades(franchise=payload.franchise_id)
-        blob = str(pending)
+        offers = self._pending_offers(payload.franchise_id)
         if isinstance(payload, TradeProposalPayload):
-            if payload.to_franchise_id in blob:
+            match = any(
+                o.offering_franchise == payload.franchise_id
+                and o.offered_to == payload.to_franchise_id
+                and set(o.gives) == set(payload.gives_player_ids)
+                and set(o.receives) == set(payload.receives_player_ids)
+                for o in offers
+            )
+            if match:
                 return True, "the proposal appears in pending trades"
-            return False, "the proposal was not found in pending trades"
-        if payload.offer_id in blob:
+            return False, "no pending trade matches the proposal that was sent"
+        if any(o.trade_id == payload.offer_id for o in offers):
             return False, f"offer {payload.offer_id} is still pending"
         return True, "the offer is no longer pending, consistent with the response"

@@ -213,8 +213,11 @@ CREATE TABLE IF NOT EXISTS approval_tokens (
     issued_at         TEXT NOT NULL,
     expires_at        TEXT NOT NULL,
     consumed_at       TEXT,           -- non-NULL once used; tokens are single-use
-    approved_by       TEXT NOT NULL
+    approved_by       TEXT NOT NULL,
+    revoked_at        TEXT,           -- non-NULL once withdrawn by a reject or edit
+    revoked_reason    TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_tokens_rec ON approval_tokens (recommendation_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,

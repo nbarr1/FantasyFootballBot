@@ -422,6 +422,54 @@ def test_no_submit_mode_records_approval_but_never_writes(context, monkeypatch) 
         )
 
 
+def test_rejecting_after_approving_means_submit_sends_nothing(
+    signed_in, context, monkeypatch
+) -> None:
+    """A second tab still showing Submit must not be able to spend an approval
+    the user has since withdrawn."""
+    monkeypatch.setattr(
+        BotContext,
+        "execute_approved",
+        lambda *a, **k: pytest.fail("a rejected recommendation reached the executor"),
+    )
+    recommendation = only_recommendation(context)
+    form = csrf_token(signed_in)
+    signed_in.post(f"/recommendations/{recommendation.id}/approve", data={"csrf_token": form})
+    signed_in.post(f"/recommendations/{recommendation.id}/reject", data={"csrf_token": form})
+
+    response = signed_in.post(
+        f"/recommendations/{recommendation.id}/submit",
+        data={"csrf_token": form},
+        follow_redirects=True,
+    )
+
+    assert "no live approval" in response.text
+    assert context.store.get(recommendation.id).status == RecommendationStatus.REJECTED
+
+
+def test_an_approved_recommendation_can_be_edited_and_approved_again(
+    signed_in, context
+) -> None:
+    recommendation = only_recommendation(context)
+    form = csrf_token(signed_in)
+    signed_in.post(f"/recommendations/{recommendation.id}/approve", data={"csrf_token": form})
+    first = context.tokens.latest_for(recommendation.id)
+
+    page = signed_in.get(f"/recommendations/{recommendation.id}").text
+    assert "Withdraw approval and reject" in page
+    signed_in.post(
+        f"/recommendations/{recommendation.id}/edit",
+        data={"csrf_token": form, "field_week": str(WEEK + 1)},
+    )
+    assert context.store.get(recommendation.id).status == RecommendationStatus.PROPOSED
+    assert context.tokens.latest_for(recommendation.id) is None
+
+    signed_in.post(f"/recommendations/{recommendation.id}/approve", data={"csrf_token": form})
+    second = context.tokens.latest_for(recommendation.id)
+    assert second is not None and second.token_id != first.token_id
+    assert second.payload_hash == context.store.get(recommendation.id).payload_hash
+
+
 # ---------------------------------------------------------------------------
 # the job bridge
 # ---------------------------------------------------------------------------
@@ -573,3 +621,93 @@ def test_the_state_api_reports_what_is_blocked(signed_in, context) -> None:
     assert payload["status"]["pending_count"] == 1
     assert payload["status"]["writes_total"] > 0
     assert "counts" in payload["status"]
+
+
+# ---------------------------------------------------------------------------
+# the access token stays out of logs; odd input is refused, not a crash
+# ---------------------------------------------------------------------------
+
+def test_the_access_token_is_redacted_from_request_logs() -> None:
+    from mflbot.mfl.auth import redact
+
+    line = '127.0.0.1:5000 - "GET /login?token=abcDEF123_-xyz&next=/ HTTP/1.1" 303'
+    assert "abcDEF123" not in redact(line)
+    assert "next=/" in redact(line)
+
+
+def test_serve_routes_uvicorn_logs_through_the_redacting_formatter(
+    context, monkeypatch
+) -> None:
+    import argparse
+
+    import uvicorn
+
+    from mflbot.cli import cmd_serve
+
+    captured = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(kw))
+    monkeypatch.delenv("MFLBOT_WEB_PASSWORD", raising=False)
+    args = argparse.Namespace(
+        host="127.0.0.1", port=8765, no_submit=False, no_jobs=False, with_scheduler=False
+    )
+    assert cmd_serve(args, context) == 0
+    assert "log_config" in captured and captured["log_config"] is None
+
+
+def test_a_non_ascii_access_token_is_refused_not_a_server_error(context) -> None:
+    with TestClient(build_app(context, WebSecurity.create(None))) as client:
+        response = client.get("/login", params={"token": "é"})
+    assert response.status_code == 401
+
+
+def test_a_non_ascii_csrf_token_is_refused_not_a_server_error(signed_in, context) -> None:
+    recommendation = only_recommendation(context)
+    response = signed_in.post(
+        f"/recommendations/{recommendation.id}/approve", data={"csrf_token": "é"}
+    )
+    assert response.status_code == 403
+
+
+def test_a_jobs_console_shows_only_that_jobs_output(context) -> None:
+    """Logs and prints from other threads must not appear in a job's output."""
+    import logging
+    import threading
+
+    from mflbot.web.events import EventBus
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def noisy_neighbour() -> None:
+        started.wait(5)
+        logging.getLogger("mflbot.somewhere_else").warning("NEIGHBOUR-LOG")
+        print("NEIGHBOUR-PRINT")
+        release.set()
+
+    def slow_status(args, ctx):
+        started.set()
+        release.wait(5)
+        print("JOB-PRINT")
+        return 0
+
+    manager = JobManager(context, EventBus())
+    from mflbot import cli
+
+    original = cli.cmd_status
+    cli.cmd_status = slow_status
+    try:
+        neighbour = threading.Thread(target=noisy_neighbour)
+        neighbour.start()
+        run = manager.submit("status", {}, actor="test")
+        neighbour.join(10)
+        deadline = time.time() + 10
+        while not manager.get(run.id).is_finished and time.time() < deadline:
+            time.sleep(0.05)
+    finally:
+        cli.cmd_status = original
+        manager.stop()
+
+    output = "\n".join(manager.get(run.id).lines)
+    assert "JOB-PRINT" in output
+    assert "NEIGHBOUR-LOG" not in output
+    assert "NEIGHBOUR-PRINT" not in output

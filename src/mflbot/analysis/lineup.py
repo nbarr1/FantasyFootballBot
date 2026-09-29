@@ -13,6 +13,16 @@ the league export. Two solvers:
   solver **refuses to answer** rather than returning a lineup that may be
   beatable. Install the ``solver`` extra to handle those leagues.
 
+A slot may allow a range of starters (``RB 2-4``). Its minimum is always
+filled; the seats above the minimum are *optional*, and the league's total
+starter count decides how many of them are filled in all. When that total is
+unknown, only the minimums are filled and the solution says so -- it does not
+guess at a lineup size.
+
+A player designated OUT (or IR, suspended, inactive) is never started: they
+score nothing, so the seat goes to the best healthy alternative, and the
+solution lists who was benched and why.
+
 Every starter carries risk flags, and the result is diffed against what is
 currently submitted so the user is shown changes, not a wall of confirmations.
 """
@@ -70,6 +80,8 @@ class LineupSolution:
     solver: str = "greedy"
     #: Roster players with no projection, which is why they were not considered.
     unprojected: list[str] = field(default_factory=list)
+    #: Projected players deliberately left out, each with the reason.
+    benched: list[str] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
 
     @property
@@ -99,32 +111,58 @@ def _is_laminar(slots: Sequence[LineupSlot]) -> bool:
     return True
 
 
-def _expand_slots(slots: Sequence[LineupSlot]) -> list[LineupSlot]:
-    """Expand ``2 RB`` into two single-seat slots, so each seat is assigned once.
+def _expand_slots(
+    slots: Sequence[LineupSlot],
+) -> tuple[list[LineupSlot], list[LineupSlot]]:
+    """Expand each slot into single seats: ``(required, optional)``.
 
-    Range slots (``1-2 FLEX``) are expanded to their minimum, because filling
-    only the required seats is the legal-lineup question. Optional extra seats
-    are surfaced as a caveat by the caller if they exist.
+    ``2 RB`` becomes two required RB seats, so each seat is assigned once.
+    ``RB 2-4`` becomes two required seats and two optional ones; how many
+    optional seats are filled in total is capped by the league's starter count
+    (see :func:`optimise_lineup`).
     """
-    expanded: list[LineupSlot] = []
+    required: list[LineupSlot] = []
+    optional: list[LineupSlot] = []
     for slot in slots:
-        for seat in range(max(slot.min_starters, 0)):
-            expanded.append(
+        low = max(slot.min_starters, 0)
+        high = max(slot.max_starters, low)
+        for seat in range(high):
+            name = slot.name if high == 1 else f"{slot.name}#{seat + 1}"
+            bucket = required if seat < low else optional
+            bucket.append(
                 LineupSlot(
-                    index=len(expanded),
-                    name=slot.name if slot.min_starters == 1 else f"{slot.name}#{seat + 1}",
+                    index=0,  # renumbered below, once both lists are known
+                    name=name,
                     eligible_positions=slot.eligible_positions,
                     min_starters=1,
                     max_starters=1,
                 )
             )
-    return expanded
+    seats = [
+        LineupSlot(i, s.name, s.eligible_positions, 1, 1)
+        for i, s in enumerate(required + optional)
+    ]
+    return seats[: len(required)], seats[len(required):]
+
+
+def _single_position_seats(seats: Sequence[LineupSlot]) -> bool:
+    return all(len(set(s.eligible_positions)) == 1 for s in seats)
 
 
 def solve_greedy(
-    slots: Sequence[LineupSlot], candidates: Sequence[Candidate]
+    slots: Sequence[LineupSlot],
+    candidates: Sequence[Candidate],
+    *,
+    optional: Sequence[LineupSlot] = (),
+    extra: int = 0,
 ) -> list[tuple[LineupSlot, Candidate]] | Missing:
-    """Fill the most restrictive slots first. Optimal for laminar structures."""
+    """Fill the most restrictive slots first. Optimal for laminar structures.
+
+    Optional seats (``extra`` of them, chosen from ``optional``) are then filled
+    with the best remaining players. That second pass is provably optimal only
+    when every seat takes a single position -- MFL's positional ranges -- so any
+    other structure with optional seats is refused rather than approximated.
+    """
     if not _is_laminar(slots):
         return Missing(
             "this league's flex structure has overlapping, non-nested slot "
@@ -133,6 +171,12 @@ def solve_greedy(
                 "remedy": "pip install 'mflbot[solver]' to enable the exact ILP solver",
                 "slots": [f"{s.name}:{'/'.join(s.eligible_positions)}" for s in slots],
             },
+        )
+    if extra > 0 and optional and not _single_position_seats([*slots, *optional]):
+        return Missing(
+            "this league combines flex slots with ranged slots, which the greedy "
+            "solver cannot solve optimally",
+            {"remedy": "pip install 'mflbot[solver]' to enable the exact ILP solver"},
         )
 
     remaining = sorted(candidates, key=lambda c: -c.projection)
@@ -152,11 +196,30 @@ def solve_greedy(
             continue
         used.add(pick.player_id)
         result.append((slot, pick))
+
+    open_seats = list(optional)
+    filled = 0
+    for candidate in remaining:
+        if filled >= extra:
+            break
+        if candidate.player_id in used:
+            continue
+        seat = next((s for s in open_seats if s.accepts(candidate.position)), None)
+        if seat is None:
+            continue
+        open_seats.remove(seat)
+        used.add(candidate.player_id)
+        result.append((seat, candidate))
+        filled += 1
     return result
 
 
 def solve_ilp(
-    slots: Sequence[LineupSlot], candidates: Sequence[Candidate]
+    slots: Sequence[LineupSlot],
+    candidates: Sequence[Candidate],
+    *,
+    optional: Sequence[LineupSlot] = (),
+    extra: int = 0,
 ) -> list[tuple[LineupSlot, Candidate]] | Missing:
     """Exact assignment via integer programming. Requires ``pulp``."""
     try:
@@ -166,10 +229,21 @@ def solve_ilp(
             "the ILP solver is not installed",
             {"remedy": "pip install 'mflbot[solver]'"},
         )
+    try:
+        return _solve_ilp(pulp, slots, candidates, optional, extra)
+    except Exception as exc:  # noqa: BLE001 - a solver fault must fall back, not crash
+        # An incompatible pulp release or a missing CBC binary lands here. The
+        # caller falls back to the greedy solver, which refuses structures it
+        # cannot solve exactly, so this never degrades into a worse lineup.
+        return Missing("the ILP solver failed", {"error": f"{type(exc).__name__}: {exc}"})
 
+
+def _solve_ilp(pulp, slots, candidates, optional, extra):
+    seats = [*slots, *optional]
+    optional_indexes = {s.index for s in optional}
     problem = pulp.LpProblem("lineup", pulp.LpMaximize)
     variables: dict[tuple[int, str], object] = {}
-    for slot in slots:
+    for slot in seats:
         for candidate in candidates:
             if slot.accepts(candidate.position):
                 variables[(slot.index, candidate.player_id)] = pulp.LpVariable(
@@ -181,12 +255,12 @@ def solve_ilp(
 
     problem += pulp.lpSum(
         variables[(slot.index, c.player_id)] * c.projection
-        for slot in slots
+        for slot in seats
         for c in candidates
         if (slot.index, c.player_id) in variables
     )
     # Each seat holds at most one player.
-    for slot in slots:
+    for slot in seats:
         seat_vars = [
             variables[(slot.index, c.player_id)]
             for c in candidates
@@ -198,11 +272,15 @@ def solve_ilp(
     for candidate in candidates:
         player_vars = [
             variables[(slot.index, candidate.player_id)]
-            for slot in slots
+            for slot in seats
             if (slot.index, candidate.player_id) in variables
         ]
         if player_vars:
             problem += pulp.lpSum(player_vars) <= 1
+    # No more optional seats than the league's starter count leaves room for.
+    optional_vars = [v for (index, _), v in variables.items() if index in optional_indexes]
+    if optional_vars:
+        problem += pulp.lpSum(optional_vars) <= extra
 
     status = problem.solve(pulp.PULP_CBC_CMD(msg=False))
     if pulp.LpStatus[status] != "Optimal":
@@ -212,7 +290,7 @@ def solve_ilp(
         )
 
     by_id = {c.player_id: c for c in candidates}
-    by_index = {s.index: s for s in slots}
+    by_index = {s.index: s for s in seats}
     out: list[tuple[LineupSlot, Candidate]] = []
     for (slot_index, player_id), var in variables.items():
         if var.value() and round(var.value()) == 1:
@@ -220,9 +298,11 @@ def solve_ilp(
     return out
 
 
-def assess_risks(
-    candidate: Candidate, lock_time: datetime | None, escalate_within_hours: float
-) -> tuple[str, ...]:
+def is_designated_out(injury_status: str | None) -> bool:
+    return (injury_status or "").upper() in OUT_STATUSES
+
+
+def assess_risks(candidate: Candidate, lock_time: datetime | None) -> tuple[str, ...]:
     """Per-starter risk flags. Each is a fact, not a prediction."""
     risks: list[str] = []
     status = (candidate.injury_status or "").upper()
@@ -247,35 +327,72 @@ def optimise_lineup(
     slots: Sequence[LineupSlot],
     candidates: Sequence[Candidate],
     *,
+    starter_count: int | None = None,
     lock_time: datetime | None = None,
-    escalate_within_hours: float = 3.0,
     prefer_ilp: bool = True,
 ) -> LineupSolution | Missing:
-    """Compute the highest-projected legal lineup."""
+    """Compute the highest-projected legal lineup.
+
+    ``starter_count`` is the league's total number of starters. It matters only
+    when a slot allows a range: it decides how many seats above the slot
+    minimums are filled.
+    """
     if not slots:
         return Missing(
             "the league's starting lineup structure is unknown",
             {"remedy": "run `bot sync-config` once credentials are configured"},
         )
 
-    startable = [c for c in candidates if not c.on_bye]
+    benched = [
+        f"{c.player.display} (designated {c.injury_status})"
+        for c in candidates
+        if not c.on_bye and is_designated_out(c.injury_status)
+    ]
+    startable = [
+        c for c in candidates if not c.on_bye and not is_designated_out(c.injury_status)
+    ]
     if not startable:
         return Missing(
-            "no rostered player has a projection for this week",
-            {"roster_size": len(candidates)},
+            "no rostered player is available to start this week",
+            {"roster_size": len(candidates), "benched": benched},
         )
 
-    expanded = _expand_slots(slots)
+    required, optional = _expand_slots(slots)
+    caveats: list[str] = []
+    extra = 0
+    if starter_count is None:
+        if optional:
+            caveats.append(
+                f"{len(optional)} lineup seat(s) are optional (a slot allows more "
+                f"starters than its minimum), and the league's total starter count "
+                f"is unknown, so only the minimum {len(required)} were filled. Check "
+                f"`bot config-summary`; you may be able to start more."
+            )
+    elif starter_count < len(required):
+        caveats.append(
+            f"The league reports {starter_count} starters, fewer than the "
+            f"{len(required)} its slot minimums require; only the minimums were "
+            f"filled. Check `bot config-summary`."
+        )
+    else:
+        extra = min(starter_count - len(required), len(optional))
+        if starter_count > len(required) + len(optional):
+            caveats.append(
+                f"The league reports {starter_count} starters, but the parsed slots "
+                f"allow at most {len(required) + len(optional)}. Check "
+                f"`bot config-summary` -- a slot may not have been parsed."
+            )
+
     solution_pairs: list[tuple[LineupSlot, Candidate]] | Missing
     solver_used = "ilp"
     if prefer_ilp:
-        solution_pairs = solve_ilp(expanded, startable)
+        solution_pairs = solve_ilp(required, startable, optional=optional, extra=extra)
         if isinstance(solution_pairs, Missing):
-            log.info("ILP unavailable (%s); falling back to greedy", solution_pairs.reason)
-            solution_pairs = solve_greedy(expanded, startable)
+            log.info("ILP unavailable (%s); falling back to greedy", solution_pairs)
+            solution_pairs = solve_greedy(required, startable, optional=optional, extra=extra)
             solver_used = "greedy"
     else:
-        solution_pairs = solve_greedy(expanded, startable)
+        solution_pairs = solve_greedy(required, startable, optional=optional, extra=extra)
         solver_used = "greedy"
 
     if isinstance(solution_pairs, Missing):
@@ -285,7 +402,7 @@ def optimise_lineup(
         SlotAssignment(
             slot=slot,
             candidate=candidate,
-            risks=assess_risks(candidate, lock_time, escalate_within_hours),
+            risks=assess_risks(candidate, lock_time),
         )
         for slot, candidate in solution_pairs
     ]
@@ -295,13 +412,22 @@ def optimise_lineup(
         assignments=assignments,
         total_projection=round(sum(a.candidate.projection for a in assignments), 3),
         solver=solver_used,
+        benched=benched,
+        caveats=caveats,
     )
 
-    unfilled = len(expanded) - len(assignments)
+    optional_indexes = {s.index for s in optional}
+    required_filled = sum(1 for a in assignments if a.slot.index not in optional_indexes)
+    optional_filled = len(assignments) - required_filled
+    unfilled = (len(required) - required_filled) + (extra - optional_filled)
     if unfilled > 0:
         solution.caveats.append(
-            f"{unfilled} required lineup seat(s) could not be filled from the "
-            f"projected roster -- check for an illegal or short roster."
+            f"{unfilled} lineup seat(s) could not be filled from the projected, "
+            f"available roster -- check for an illegal or short roster."
+        )
+    if benched:
+        solution.caveats.append(
+            "Benched because they will not play: " + ", ".join(benched) + "."
         )
     return solution
 

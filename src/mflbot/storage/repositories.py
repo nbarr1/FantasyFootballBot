@@ -24,7 +24,7 @@ from ..domain.models import (
     Transaction,
 )
 from ..errors import BlockedFeature
-from .db import Database, utc_now_iso
+from .db import Database, atomic, utc_now_iso
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -45,6 +45,7 @@ class Repositories:
 
     # -- league configuration ---------------------------------------------
 
+    @atomic
     def save_league_settings(self, settings: LeagueSettings, raw: Any) -> None:
         self.db.execute(
             """
@@ -123,7 +124,6 @@ class Repositories:
                 for f in settings.franchises
             ],
         )
-        self.db.commit()
 
     def load_league_settings(self, league_id: str, season: int) -> LeagueSettings | None:
         row = self.db.query_one(
@@ -184,6 +184,7 @@ class Repositories:
 
     # -- scoring rules ------------------------------------------------------
 
+    @atomic
     def save_scoring_rules(
         self, league_id: str, season: int, rules: Sequence[Any], gaps: Sequence[Any]
     ) -> None:
@@ -233,7 +234,6 @@ class Repositories:
                 for gap in gaps
             ],
         )
-        self.db.commit()
 
     def load_scoring_rule_rows(self, league_id: str, season: int) -> list[dict[str, Any]]:
         return [
@@ -255,6 +255,7 @@ class Repositories:
             )
         ]
 
+    @atomic
     def save_rule_definitions(self, definitions: Iterable[dict[str, Any]]) -> int:
         now = utc_now_iso()
         rows = [
@@ -276,7 +277,6 @@ class Repositories:
             "description=excluded.description, fetched_at=excluded.fetched_at",
             rows,
         )
-        self.db.commit()
         return len(rows)
 
     def known_event_codes(self) -> set[str]:
@@ -284,6 +284,7 @@ class Repositories:
 
     # -- players ------------------------------------------------------------
 
+    @atomic
     def upsert_players(self, players: Iterable[Player]) -> int:
         now = utc_now_iso()
         rows = [(p.player_id, p.name, p.position, p.nfl_team, p.status, now) for p in players]
@@ -294,7 +295,6 @@ class Repositories:
             "status=excluded.status, updated_at=excluded.updated_at",
             rows,
         )
-        self.db.commit()
         return len(rows)
 
     def get_player(self, player_id: str) -> Player | None:
@@ -316,6 +316,7 @@ class Repositories:
 
     # -- rosters and free agents -------------------------------------------
 
+    @atomic
     def save_roster_snapshot(
         self, league_id: str, season: int, entries: Iterable[RosterEntry]
     ) -> str:
@@ -328,7 +329,6 @@ class Repositories:
                 for e in entries
             ],
         )
-        self.db.commit()
         return snapshot_at
 
     def latest_roster_snapshot_at(self, league_id: str, season: int) -> str | None:
@@ -352,6 +352,7 @@ class Repositories:
             )
         return out
 
+    @atomic
     def save_free_agents(
         self, league_id: str, season: int, player_ids: Iterable[str]
     ) -> str:
@@ -361,7 +362,6 @@ class Repositories:
             "VALUES (?,?,?,?)",
             [(league_id, season, pid, snapshot_at) for pid in player_ids],
         )
-        self.db.commit()
         return snapshot_at
 
     def current_free_agents(self, league_id: str, season: int) -> list[str]:
@@ -382,6 +382,7 @@ class Repositories:
 
     # -- scores and projections ---------------------------------------------
 
+    @atomic
     def save_scores(
         self, league_id: str, season: int, week: int, scores: Iterable[tuple[str, float]],
         *, is_final: bool = False,
@@ -399,7 +400,6 @@ class Repositories:
             "fetched_at=excluded.fetched_at",
             rows,
         )
-        self.db.commit()
         return len(rows)
 
     def load_scores(self, league_id: str, season: int, week: int) -> dict[str, float]:
@@ -412,6 +412,7 @@ class Repositories:
             )
         }
 
+    @atomic
     def save_projections(
         self, league_id: str, season: int, projections: Iterable[Projection]
     ) -> int:
@@ -427,7 +428,6 @@ class Repositories:
             "points=excluded.points, fetched_at=excluded.fetched_at",
             rows,
         )
-        self.db.commit()
         return len(rows)
 
     def load_projections(
@@ -455,6 +455,7 @@ class Repositories:
 
     # -- transactions -------------------------------------------------------
 
+    @atomic
     def save_transactions(
         self, league_id: str, season: int, transactions: Iterable[Transaction]
     ) -> list[Transaction]:
@@ -487,7 +488,6 @@ class Repositories:
                 ),
             )
             new.append(tx)
-        self.db.commit()
         return new
 
     def transaction_count(self, league_id: str, season: int) -> int:
@@ -498,6 +498,7 @@ class Repositories:
 
     # -- news ---------------------------------------------------------------
 
+    @atomic
     def save_news(self, items: Iterable[NewsItem]) -> list[NewsItem]:
         now = utc_now_iso()
         new: list[NewsItem] = []
@@ -521,7 +522,6 @@ class Repositories:
             )
             if cursor.rowcount:
                 new.append(item)
-        self.db.commit()
         return new
 
     def recent_news_for_players(
@@ -544,6 +544,7 @@ class Repositories:
 
     # -- blocked features ---------------------------------------------------
 
+    @atomic
     def block_feature(self, blocked: BlockedFeature) -> None:
         self.db.execute(
             "INSERT INTO blocked_features (feature, reason, gaps_json, remedy, blocked_at) "
@@ -558,11 +559,10 @@ class Repositories:
                 utc_now_iso(),
             ),
         )
-        self.db.commit()
 
+    @atomic
     def unblock_feature(self, feature: str) -> None:
         self.db.execute("DELETE FROM blocked_features WHERE feature=?", (feature,))
-        self.db.commit()
 
     def blocked_features(self) -> list[BlockedFeature]:
         return [
@@ -577,6 +577,7 @@ class Repositories:
 
     # -- ingest bookkeeping -------------------------------------------------
 
+    @atomic
     def set_state(self, key: str, value: str) -> None:
         self.db.execute(
             "INSERT INTO ingest_state (key, value, updated_at) VALUES (?,?,?) "
@@ -584,14 +585,21 @@ class Repositories:
             "updated_at=excluded.updated_at",
             (key, value, utc_now_iso()),
         )
-        self.db.commit()
 
     def get_state(self, key: str) -> str | None:
         row = self.db.query_one("SELECT value FROM ingest_state WHERE key=?", (key,))
         return row["value"] if row else None
 
+    def get_state_entry(self, key: str) -> tuple[str, datetime | None] | None:
+        """A state value together with when it was last written."""
+        row = self.db.query_one(
+            "SELECT value, updated_at FROM ingest_state WHERE key=?", (key,)
+        )
+        return (row["value"], _parse_dt(row["updated_at"])) if row else None
+
     # -- audit --------------------------------------------------------------
 
+    @atomic
     def audit(
         self,
         *,
@@ -624,7 +632,6 @@ class Repositories:
                 json.dumps(detail or {}, separators=(",", ":")),
             ),
         )
-        self.db.commit()
         return cursor.lastrowid or 0
 
     def audit_entries(self, limit: int = 50) -> list[dict[str, Any]]:

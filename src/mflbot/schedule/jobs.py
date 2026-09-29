@@ -7,12 +7,13 @@ Job                          When
 ===========================  ==========================================
 Config refresh               daily (catches mid-season scoring edits)
 Player database refresh      daily (MFL's stated limit)
+Projections refresh          daily, this week and next
 League-state diff            every 30-60 minutes in season
 News ingestion               every 30-60 minutes
 Waiver analysis              weekly, plus on any roster/free-agent diff
-Trade analysis               weekly, plus on an incoming offer
+Trade proposals              weekly
+Trade offers to you          every poll (each offer is evaluated once)
 Lineup analysis              computed from the league's real deadline
-Live scoring watch           inside NFL game windows only
 ===========================  ==========================================
 
 Analysis jobs produce recommendations and notify. **No job executes anything.**
@@ -21,7 +22,9 @@ human approves through :mod:`mflbot.approval`.
 
 Every job's outcome is recorded as it runs, which is what
 :mod:`mflbot.schedule.heartbeat` reads to tell a quiet week apart from a
-stopped bot.
+stopped bot. On startup, any job whose last success is older than its own
+cadence runs straight away rather than at its next slot, so a restart after
+downtime catches up instead of reporting stale for up to a day.
 """
 
 from __future__ import annotations
@@ -33,12 +36,18 @@ from datetime import UTC, datetime, timedelta
 
 log = logging.getLogger(__name__)
 
+#: Id prefix for the one-off lineup-analysis runs planned from the deadline.
+LINEUP_JOB_PREFIX = "lineup_analysis_"
+
 
 @dataclass(slots=True)
 class JobRunner:
     """Holds the wiring each job needs and exposes them as callables."""
 
     context: object  # mflbot.cli.BotContext
+    #: When the scheduler started. The watchdog judges never-run jobs against
+    #: this, so it is set once, when the scheduler is built.
+    started_at: datetime | None = None
     #: Built on first use so that constructing a JobRunner stays free of I/O.
     _heartbeat_impl: object = None
 
@@ -53,6 +62,7 @@ class JobRunner:
                 self.context.config,
                 self.context.notifier,
                 ping=DeadManPing(),
+                started_at=self.started_at,
             )
         return self._heartbeat_impl
 
@@ -80,17 +90,45 @@ class JobRunner:
     def poll_state(self) -> str:
         from ..ingest.league_state import poll_league_state
 
-        diff = poll_league_state(self.context.client, self.context.repos)
+        # Forced past the response cache: the cache's TTL for rosters and free
+        # agents is an hour, so an unforced poll could not notice a change any
+        # sooner than that, however often [schedule] asks it to run.
+        diff = poll_league_state(self.context.client, self.context.repos, force=True)
         if not diff.has_changes:
             return "no league changes"
 
         # A change is a trigger, not an action.
         if diff.roster_changed or diff.free_agents_changed:
             self.analyse_waivers()
-        offers = diff.incoming_trades(self.context.config.league.franchise_id)
-        if offers:
-            self.analyse_trades()
         return diff.summary()
+
+    def check_offers(self) -> str:
+        """Evaluate trade offers made to you. Each offer is handled once."""
+        return self.context.run_offer_analysis()
+
+    def refresh_projections(self) -> str:
+        """This week's projections and next week's, where MFL publishes them.
+
+        Every analysis engine reads stored projections, so without this job a
+        running bot would analyse whatever someone last synced by hand.
+        """
+        from ..ingest.scores import sync_projections
+
+        week = self.context.current_week()
+        if week is None:
+            raise RuntimeError("the current NFL week could not be determined")
+        counts = {
+            w: sync_projections(self.context.client, self.context.repos, w, force=True)
+            for w in (week, week + 1)
+        }
+        # No projections is reported, not raised. Some MFL hosts publish none;
+        # the analysis engines already block on that and say why, and a job
+        # that failed every day for it would silence the dead man's ping for
+        # good -- an alarm for a data gap rather than a stalled bot.
+        return ", ".join(
+            f"week {w}: {n} rows" if n else f"week {w}: MFL published none"
+            for w, n in counts.items()
+        )
 
     def ingest_news(self) -> str:
         from ..ingest.news.registry import build_sources, ingest_news
@@ -101,10 +139,18 @@ class JobRunner:
             self.context.repos,
             self.context.client.cache,
         )
-        results = ingest_news(sources, self.context.repos)
-        for source in sources:
-            source.close()
-        return ", ".join(f"{k}={v}" for k, v in results.items()) or "no sources enabled"
+        try:
+            results = ingest_news(sources, self.context.repos)
+        finally:
+            for source in sources:
+                source.close()
+        summary = ", ".join(f"{k}={v}" for k, v in results.items()) or "no sources enabled"
+        failed = sorted(k for k, v in results.items() if v < 0)
+        if failed:
+            # A broken feed looks exactly like a quiet one unless it is
+            # reported as a failure, so the watchdog can see it.
+            raise RuntimeError(f"news source(s) failed: {', '.join(failed)} ({summary})")
+        return summary
 
     # -- analysis ----------------------------------------------------------
 
@@ -125,21 +171,6 @@ class JobRunner:
         """Check that the other jobs are keeping up; check in while they are."""
         return self._heartbeat.run().summary()
 
-    def watch_live_scoring(self) -> str:
-        """Poll live scoring during a game window.
-
-        In-game information is treated as a *next week* signal. A player going
-        quiet mid-game is not a reason to act now -- lineups are already locked --
-        so this job records and never proposes.
-        """
-        week = self.context.current_week()
-        if week is None:
-            return "current week unknown; skipping"
-        from ..ingest.scores import sync_scores
-
-        count = sync_scores(self.context.client, self.context.repos, week)
-        return f"live scoring week {week}: {count} rows"
-
 
 def lineup_run_times(
     deadline: datetime, lead_times_hours: tuple[float, ...], now: datetime | None = None
@@ -157,6 +188,14 @@ def lineup_run_times(
     )
 
 
+def _overdue(repos, job_id: str, cadence: timedelta, now: datetime) -> bool:
+    """True when a job has not succeeded within one of its own cadences."""
+    from .heartbeat import LAST_SUCCESS, _read_time
+
+    last = _read_time(repos, LAST_SUCCESS + job_id)
+    return last is None or now - last > cadence
+
+
 def build_scheduler(runner: JobRunner, config):
     """Build an APScheduler instance with every job registered."""
     try:
@@ -169,32 +208,54 @@ def build_scheduler(runner: JobRunner, config):
     from .heartbeat import record_failure, record_success
 
     scheduler = BackgroundScheduler(timezone="UTC")
+    now = datetime.now(UTC)
+    runner.started_at = runner.started_at or now
+    repos = runner.context.repos
 
-    def register(name: str, func: Callable[[], str], trigger) -> None:
+    def recorded(name: str, func: Callable[[], str]) -> Callable[[], None]:
+        # Every outcome is recorded here rather than in each job, so a job
+        # added later is watched by the heartbeat without anyone remembering
+        # to instrument it.
         def wrapped() -> None:
-            # Every outcome is recorded here rather than in each job, so a job
-            # added later is watched by the heartbeat without anyone
-            # remembering to instrument it.
             try:
                 result = func()
                 log.info("job %s: %s", name, result)
-                record_success(runner.context.repos, name)
+                record_success(repos, name)
             except Exception as exc:  # noqa: BLE001 - one bad job must not kill the loop
                 log.exception("job %s failed", name)
-                record_failure(runner.context.repos, name, f"{type(exc).__name__}: {exc}")
+                record_failure(repos, name, f"{type(exc).__name__}: {exc}")
 
-        scheduler.add_job(wrapped, trigger, id=name, replace_existing=True,
-                          max_instances=1, coalesce=True)
+        return wrapped
+
+    def register(name: str, func: Callable[[], str], trigger, *,
+                 catch_up_after: timedelta | None = None) -> None:
+        extra = {}
+        if catch_up_after is not None and _overdue(repos, name, catch_up_after, now):
+            extra["next_run_time"] = now
+        scheduler.add_job(recorded(name, func), trigger, id=name, name=name,
+                          replace_existing=True, max_instances=1, coalesce=True, **extra)
 
     schedule = config.schedule
+    daily = timedelta(days=1)
+    poll = timedelta(minutes=schedule.league_state_poll_minutes)
     register("config_refresh", runner.refresh_config,
-             CronTrigger.from_crontab(schedule.config_refresh_cron, timezone="UTC"))
+             CronTrigger.from_crontab(schedule.config_refresh_cron, timezone="UTC"),
+             catch_up_after=daily)
     register("player_db_refresh", runner.refresh_players,
-             CronTrigger.from_crontab(schedule.player_db_refresh_cron, timezone="UTC"))
+             CronTrigger.from_crontab(schedule.player_db_refresh_cron, timezone="UTC"),
+             catch_up_after=daily)
+    register("projections_refresh", runner.refresh_projections,
+             CronTrigger.from_crontab(schedule.projections_refresh_cron, timezone="UTC"),
+             catch_up_after=daily)
     register("league_state_poll", runner.poll_state,
-             IntervalTrigger(minutes=schedule.league_state_poll_minutes))
+             IntervalTrigger(minutes=schedule.league_state_poll_minutes),
+             catch_up_after=poll)
+    register("trade_offers", runner.check_offers,
+             IntervalTrigger(minutes=schedule.league_state_poll_minutes),
+             catch_up_after=poll)
     register("news_ingest", runner.ingest_news,
-             IntervalTrigger(minutes=config.news.poll_minutes))
+             IntervalTrigger(minutes=config.news.poll_minutes),
+             catch_up_after=timedelta(minutes=config.news.poll_minutes))
     register("waiver_analysis", runner.analyse_waivers,
              CronTrigger.from_crontab(schedule.waiver_analysis_cron, timezone="UTC"))
     register("trade_analysis", runner.analyse_trades,
@@ -202,31 +263,41 @@ def build_scheduler(runner: JobRunner, config):
     register("expire_recommendations", runner.expire_recommendations,
              IntervalTrigger(minutes=15))
     # The watchdog is registered like any other job, so a stall in the watchdog
-    # itself shows up in the same place as any other stalled job.
+    # itself shows up in the same place as any other stalled job. It is not
+    # caught up at startup: it should judge after the catch-up runs, not race them.
     register("heartbeat", runner.heartbeat,
              IntervalTrigger(minutes=schedule.heartbeat_minutes))
 
     # Lineup analysis is scheduled relative to the league's actual deadline,
-    # which is only known once the config has been synced. The job re-registers
-    # itself each day as the deadline moves week to week.
+    # which is only known once the config has been synced. This re-plans the
+    # runs each day (and at startup) as the deadline moves week to week.
     def schedule_lineup_jobs() -> str:
         settings = runner.context.league_settings()
-        if settings is None or settings.lineup_deadline is None:
-            return "lineup deadline unknown; no lineup jobs scheduled"
-        times = lineup_run_times(
-            settings.lineup_deadline, config.lineup.lead_times_hours
-        )
-        for index, run_at in enumerate(times):
+        deadline = settings.lineup_deadline if settings is not None else None
+        times = lineup_run_times(deadline, config.lineup.lead_times_hours) if deadline else []
+        # Ids come from the run time itself, so re-planning replaces a run
+        # rather than stacking a duplicate beside it; runs no longer planned
+        # are removed.
+        wanted = {f"{LINEUP_JOB_PREFIX}{t:%Y%m%dT%H%M}": t for t in times}
+        for job in scheduler.get_jobs():
+            if job.id.startswith(LINEUP_JOB_PREFIX) and job.id not in wanted:
+                job.remove()
+        for job_id, run_at in wanted.items():
+            if scheduler.get_job(job_id) is not None:
+                continue  # already planned for this exact time
             scheduler.add_job(
-                lambda: log.info("lineup job: %s", runner.analyse_lineup()),
+                recorded("lineup_analysis", runner.analyse_lineup),
                 "date",
                 run_date=run_at,
-                id=f"lineup_analysis_{index}",
-                replace_existing=True,
+                id=job_id,
+                name=job_id,
             )
+        if deadline is None:
+            return "lineup deadline unknown; no lineup jobs scheduled"
         return f"scheduled {len(times)} lineup run(s)"
 
     register("schedule_lineup_jobs", schedule_lineup_jobs,
-             CronTrigger.from_crontab("15 5 * * *", timezone="UTC"))
+             CronTrigger.from_crontab("15 5 * * *", timezone="UTC"),
+             catch_up_after=timedelta(0))
 
     return scheduler

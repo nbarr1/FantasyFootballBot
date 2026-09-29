@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,12 @@ DEFAULT_USER_AGENT = "mflbot/0.1 (personal league assistant; contact via MFL acc
 #: registered; the default below is unregistered and gets the lower, still
 #: fully-functional, tier.
 ENV_USER_AGENT = "MFLBOT_USER_AGENT"
+
+
+#: How long a login session is used before logging in again. MFL does not
+#: document its session lifetime; renewing well inside any plausible one means
+#: a long-running scheduler never quietly carries on with a dead session.
+SESSION_MAX_AGE_SECONDS = 6 * 3600
 
 
 def resolve_user_agent() -> str:
@@ -108,6 +115,7 @@ class MFLReadClient:
             follow_redirects=True,
         )
         self._owns_transport = transport is None
+        self._logged_in_at: float | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -153,13 +161,23 @@ class MFLReadClient:
         if response.status_code != 200:
             raise AuthError(f"MFL login returned HTTP {response.status_code}")
         self.auth.session_cookie = parse_login_response(response.text)
+        self._logged_in_at = time.monotonic()
         log.info("Authenticated to MFL as %s", creds.username)
         return True
 
+    @property
+    def session_is_stale(self) -> bool:
+        """True when a login session exists but is older than the renewal age."""
+        return (
+            self.auth.session_cookie is not None
+            and self._logged_in_at is not None
+            and time.monotonic() - self._logged_in_at > SESSION_MAX_AGE_SECONDS
+        )
+
     def ensure_authenticated(self, what: str) -> None:
-        if self.auth.can_write:
-            return
-        if self.auth.credentials.has_login and not self.auth.session_cookie:
+        if self.auth.credentials.has_login and (
+            not self.auth.session_cookie or self.session_is_stale
+        ):
             self.login()
         self.auth.require_authenticated(what)
 

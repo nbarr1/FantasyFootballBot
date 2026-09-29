@@ -18,6 +18,9 @@ Consequences that fall out of that, deliberately:
 * **A leaked or replayed token is inert.** Consumption is a single atomic
   UPDATE guarded on ``consumed_at IS NULL``, so a token cannot be spent twice
   even under concurrent execution.
+* **Changing your mind revokes.** Rejecting or editing a recommendation
+  revokes every unspent token for it, so an approval that was later withdrawn
+  cannot be spent by a stale browser tab or a `bot execute` typed afterwards.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from ..errors import ApprovalError
-from ..storage.db import Database, utc_now_iso
+from ..storage.db import Database, atomic, utc_now_iso
 
 ENV_SECRET = "MFLBOT_APPROVAL_SECRET"
 DEFAULT_SECRET_PATH = Path(".approval_secret")
@@ -101,6 +104,7 @@ class TokenService:
     ) -> TokenService:
         return cls(db=db, secret=load_or_create_secret(secret_path), **kwargs)
 
+    @atomic
     def issue(self, recommendation, approved_by: str) -> ApprovalToken:
         """Mint a token for one recommendation's current payload.
 
@@ -135,7 +139,6 @@ class TokenService:
                 approved_by,
             ),
         )
-        self.db.commit()
         return ApprovalToken(
             token_id=token_id,
             recommendation_id=recommendation.id,
@@ -173,19 +176,39 @@ class TokenService:
                 f"Approval token {token.token_id} is not on record. Tokens must be "
                 f"issued by the approval interface."
             )
+        # The stored row is the record of what was approved. A token object
+        # whose fields disagree with it was not produced by issue(), whatever
+        # its signature says.
+        if (
+            row["recommendation_id"] != token.recommendation_id
+            or row["payload_hash"] != token.payload_hash
+            or not hmac.compare_digest(row["signature"], token.signature)
+        ):
+            raise ApprovalError(
+                f"Approval token {token.token_id} does not match the approval on "
+                f"record and will not be honoured."
+            )
+        if row["revoked_at"] is not None:
+            raise ApprovalError(
+                f"Approval token {token.token_id} was revoked at {row['revoked_at']}"
+                f" ({row['revoked_reason'] or 'no reason recorded'}). Approve the "
+                f"current action again if it is still what you want."
+            )
         if row["consumed_at"] is not None:
             raise ApprovalError(
                 f"Approval token {token.token_id} was already used at "
                 f"{row['consumed_at']}. Each approval authorises exactly one "
                 f"submission."
             )
-        if token.is_expired:
+        expires_at = datetime.fromisoformat(row["expires_at"])
+        if datetime.now(UTC) >= expires_at:
             raise ApprovalError(
                 f"Approval token {token.token_id} expired at "
-                f"{token.expires_at:%Y-%m-%d %H:%M UTC}. Approve again if the action "
+                f"{expires_at:%Y-%m-%d %H:%M UTC}. Approve again if the action "
                 f"is still what you want."
             )
 
+    @atomic
     def consume(self, token: ApprovalToken, payload_hash: str) -> None:
         """Verify then atomically spend the token.
 
@@ -195,10 +218,9 @@ class TokenService:
         self.verify(token, payload_hash)
         cursor = self.db.execute(
             "UPDATE approval_tokens SET consumed_at=? WHERE token_id=? "
-            "AND consumed_at IS NULL",
+            "AND consumed_at IS NULL AND revoked_at IS NULL",
             (utc_now_iso(), token.token_id),
         )
-        self.db.commit()
         if cursor.rowcount != 1:
             raise ApprovalError(
                 f"Approval token {token.token_id} was consumed concurrently; "
@@ -218,13 +240,29 @@ class TokenService:
         """
         row = self.db.query_one(
             "SELECT * FROM approval_tokens WHERE recommendation_id=? "
-            "AND consumed_at IS NULL ORDER BY issued_at DESC LIMIT 1",
+            "AND consumed_at IS NULL AND revoked_at IS NULL "
+            "ORDER BY issued_at DESC LIMIT 1",
             (recommendation_id,),
         )
         if row is None:
             return None
         token = self._row_to_token(row)
         return None if token.is_expired else token
+
+    @atomic
+    def revoke_for(self, recommendation_id: str, reason: str) -> int:
+        """Revoke every unspent token for a recommendation. Returns how many.
+
+        Called when the user rejects or edits a recommendation: the decision a
+        token recorded no longer stands, so the token must stop working rather
+        than wait out its expiry.
+        """
+        cursor = self.db.execute(
+            "UPDATE approval_tokens SET revoked_at=?, revoked_reason=? "
+            "WHERE recommendation_id=? AND consumed_at IS NULL AND revoked_at IS NULL",
+            (utc_now_iso(), reason, recommendation_id),
+        )
+        return cursor.rowcount or 0
 
     def load(self, token_id: str) -> ApprovalToken | None:
         row = self.db.query_one(

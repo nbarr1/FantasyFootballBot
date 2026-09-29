@@ -78,7 +78,9 @@ def cmd_verify_endpoints(args, context: BotContext) -> int:
     """Reconcile the endpoint registry against MFL's live API documentation."""
     from .mfl.verify import verify_endpoints
 
-    report = verify_endpoints(context.client, context.registry)
+    report = verify_endpoints(
+        context.client, context.registry, lock_path=context.registry.lock_path
+    )
     print(report.render())
     return 0 if report.all_writes_resolved else 2
 
@@ -333,6 +335,11 @@ def cmd_news(args, context: BotContext) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_analyse(args, context: BotContext) -> int:
+    if args.target == "offers":
+        # Offers are judged against the week that is current now, so --week
+        # does not apply.
+        print(context.run_offer_analysis())
+        return 0
     runners = {
         "lineup": context.run_lineup_analysis,
         "waivers": context.run_waiver_analysis,
@@ -648,7 +655,11 @@ def cmd_serve(args, context: BotContext) -> int:
             file=sys.stderr,
         )
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # log_config=None: uvicorn's loggers then propagate to the handlers
+    # setup_logging installed, whose formatter redacts. Its own default config
+    # would print every request line verbatim -- including the access-token
+    # login link above, each time it is used.
+    uvicorn.run(app, host=host, port=port, log_level="info", log_config=None)
     return 0
 
 
@@ -714,12 +725,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("news", help="ingest player news").set_defaults(func=cmd_news)
 
     p = sub.add_parser("analyse", help="run an analysis engine (produces recommendations)")
-    p.add_argument("target", choices=["lineup", "waivers", "trades"])
+    p.add_argument("target", choices=["lineup", "waivers", "trades", "offers"])
     p.add_argument("--week", type=int)
     p.set_defaults(func=cmd_analyse)
     # American spelling alias.
     p = sub.add_parser("analyze", help=argparse.SUPPRESS)
-    p.add_argument("target", choices=["lineup", "waivers", "trades"])
+    p.add_argument("target", choices=["lineup", "waivers", "trades", "offers"])
     p.add_argument("--week", type=int)
     p.set_defaults(func=cmd_analyse)
 

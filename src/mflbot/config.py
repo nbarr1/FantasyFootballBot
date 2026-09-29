@@ -147,6 +147,9 @@ class ScheduleSettings:
     league_state_poll_minutes: int = 45
     config_refresh_cron: str = "0 5 * * *"
     player_db_refresh_cron: str = "30 5 * * *"
+    #: This week's and next week's projections. After the config refresh, so a
+    #: week rollover is picked up the same morning.
+    projections_refresh_cron: str = "45 5 * * *"
     waiver_analysis_cron: str = "0 22 * * 1"
     trade_analysis_cron: str = "0 20 * * 3"
     #: How often the watchdog checks whether the other jobs are keeping up, and
@@ -172,6 +175,17 @@ class Config:
     #: Approval channel id: "cli" or "web". Both enforce the same rules; this
     #: only selects which one the scheduler's notifications point at.
     approval_channel: str = "cli"
+    #: The directory holding config.toml. Relative paths the bot keeps state
+    #: in -- the database, endpoints.lock.json, the approval signing key, the
+    #: response cache -- resolve against this, not the working directory, so
+    #: running `bot` from somewhere else cannot quietly pick up different
+    #: state, or a different set of verified write endpoints.
+    base_dir: Path = field(default_factory=lambda: Path("."))
+
+    def resolve(self, path: Path | str) -> Path:
+        """``path`` if absolute, else relative to :attr:`base_dir`."""
+        path = Path(path)
+        return path if path.is_absolute() else self.base_dir / path
 
 
 def _section(raw: dict[str, Any], name: str) -> dict[str, Any]:
@@ -226,5 +240,12 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         notify=_build(NotifySettings, _section(raw, "notify"), "notify"),
         schedule=_build(ScheduleSettings, _section(raw, "schedule"), "schedule"),
         web=_build(WebSettings, _section(raw, "web"), "web"),
-        approval_channel=raw.get("approval_channel", "cli"),
+        approval_channel=_approval_channel(raw.get("approval_channel", "cli")),
+        base_dir=path.resolve().parent,
     )
+
+
+def _approval_channel(value: Any) -> str:
+    if value not in ("cli", "web"):
+        raise ConfigError(f"approval_channel must be \"cli\" or \"web\", not {value!r}")
+    return value

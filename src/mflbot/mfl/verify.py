@@ -14,15 +14,18 @@ The flow is:
 3. For each write capability, find which of its candidate names the
    documentation confirms. A capability whose candidates all miss is reported,
    not resolved.
-4. Write ``endpoints.lock.json`` with the confirmed names and a ``field_map``
+4. Update ``endpoints.lock.json`` with the confirmed names and a ``field_map``
    template the user completes for anything that could not be matched
-   unambiguously.
+   unambiguously. The update is a merge: an entry this run could not confirm
+   is kept as it was, never deleted -- a page that failed to parse on one
+   fetch must not quietly disable a capability someone verified by hand.
 
 Nothing here writes to the league. It is a read of a public documentation page.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -87,6 +90,8 @@ class VerificationReport:
     unknown_reads: tuple[str, ...] = ()
     #: capability -> payload fields still needing a manual parameter mapping.
     incomplete_field_maps: dict[Capability, tuple[str, ...]] = field(default_factory=dict)
+    #: Unresolved this run, but already pinned in the lock file and left as is.
+    kept_writes: tuple[Capability, ...] = ()
     source_url: str = ""
 
     @property
@@ -118,6 +123,11 @@ class VerificationReport:
                         lines.append(
                             f"      documented parameters: {', '.join(params)}"
                         )
+            elif capability in self.kept_writes:
+                lines.append(
+                    f"  [KEPT] {capability} -- not found in the docs this time; the "
+                    f"entry already pinned in {LOCK_FILENAME} is unchanged"
+                )
             else:
                 tried = self.unresolved_writes.get(capability, ())
                 lines.append(f"  [BLOCKED] {capability} -- not found in the docs")
@@ -256,7 +266,18 @@ def verify_endpoints(
         name for name in sorted(registry.reads) if name not in exports
     )
 
-    lock: dict[str, Any] = {"_source": url, "reads": {}, "writes": {}}
+    # Start from what is already pinned, and change only what this run confirms.
+    lock_path = Path(lock_path)
+    existing: dict[str, Any] = {}
+    if lock_path.exists():
+        existing = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock: dict[str, Any] = {
+        **existing,
+        "_source": existing.get("_source", url),
+        "_last_verified_against": url,
+        "reads": dict(existing.get("reads", {})),
+        "writes": dict(existing.get("writes", {})),
+    }
 
     for name, endpoint in registry.reads.items():
         if name in exports:
@@ -271,10 +292,13 @@ def verify_endpoints(
         cap: registry.writes[cap] for cap in registry.writes if registry.writes[cap].field_map
     }
 
+    kept: list[Capability] = []
     for capability, write in registry.writes.items():
         resolved = next((c for c in write.candidates if c in imports), None)
         if resolved is None:
             report.unresolved_writes[capability] = write.candidates
+            if str(capability) in lock["writes"]:
+                kept.append(capability)
             continue
         report.resolved_writes[capability] = resolved
 
@@ -293,7 +317,9 @@ def verify_endpoints(
             for field_name in missing:
                 mapping.setdefault(field_name, "")
 
+        # Merged over the pinned entry, so notes recorded there survive.
         lock["writes"][str(capability)] = {
+            **lock["writes"].get(str(capability), {}),
             "type_name": resolved,
             "params": list(documented_params),
             "field_map": {k: v for k, v in mapping.items() if v},
@@ -301,6 +327,7 @@ def verify_endpoints(
             "_documented_params": list(documented_params),
         }
 
+    report.kept_writes = tuple(kept)
     registry.save_lock(lock, lock_path)
     log.info("Wrote %s", lock_path)
     return report
