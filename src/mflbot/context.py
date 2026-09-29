@@ -25,7 +25,7 @@ from .config import Config
 from .domain.models import LeagueSettings, Player
 from .errors import Missing
 from .mfl.client import MFLReadClient
-from .mfl.endpoints import EndpointRegistry
+from .mfl.endpoints import Capability, EndpointRegistry
 from .notify.registry import build_notifier
 from .recommend.models import (
     Confidence,
@@ -39,6 +39,9 @@ from .storage.db import Database
 from .storage.repositories import Repositories
 
 log = logging.getLogger(__name__)
+
+#: How long the current NFL week is trusted before MFL is asked again.
+CURRENT_WEEK_TTL = timedelta(hours=6)
 
 
 @dataclass(slots=True)
@@ -123,16 +126,28 @@ class BotContext:
         owner = settings.owner_franchise if settings else None
         return owner.franchise_id if owner else None
 
-    def current_week(self) -> int | None:
-        """The current NFL week, read from MFL rather than computed from a date."""
-        cached = self.repos.get_state("current_week")
-        if cached:
-            try:
-                return int(cached)
-            except ValueError:
-                pass
+    def current_week(self, *, refresh: bool = False) -> int | None:
+        """The current NFL week, read from MFL rather than computed from a date.
+
+        The answer is kept for :data:`CURRENT_WEEK_TTL` and then asked for
+        again, because it changes every week: a value cached for good would pin
+        every scheduled analysis to whichever week the bot first saw. If the
+        refresh fails once the kept value is stale, the week is reported as
+        unknown rather than assumed unchanged.
+        """
+        cached = self.repos.get_state_entry("current_week")
+        if cached is not None and not refresh:
+            value, updated_at = cached
+            if (
+                value.isdigit()
+                and updated_at is not None
+                and datetime.now(UTC) - updated_at < CURRENT_WEEK_TTL
+            ):
+                return int(value)
         try:
-            payload = self.client.export("nflSchedule").payload
+            # Forced past the response cache, whose day-long TTL for the
+            # schedule would otherwise hold the old week for up to a day.
+            payload = self.client.export("nflSchedule", force_refresh=True).payload
         except Exception as exc:  # noqa: BLE001
             log.warning("Could not determine the current week: %s", exc)
             return None
@@ -306,8 +321,8 @@ class BotContext:
         solution = optimise_lineup(
             settings.lineup_slots,
             candidates,
+            starter_count=settings.starter_count,
             lock_time=settings.lineup_deadline,
-            escalate_within_hours=self.config.lineup.escalate_within_hours,
         )
         if isinstance(solution, Missing):
             return f"Lineup analysis blocked: {solution}"
@@ -316,6 +331,7 @@ class BotContext:
         submitted = self._submitted_starters(franchise_id, week)
         lookup = {p.player_id: p for p in roster}
         changes = diff_lineup(solution, submitted, lookup) if submitted else []
+        escalations = self._escalations(submitted, lookup, injuries, playing, settings)
 
         if submitted and not changes:
             return (
@@ -350,6 +366,10 @@ class BotContext:
         rationale_lines = [
             f"Week {week} lineup, {solution.total_projection:.1f} projected points.",
         ]
+        if escalations:
+            rationale_lines.append("URGENT -- your submitted lineup starts players who "
+                                   "will not play:")
+            rationale_lines.extend(f"  ! {line}" for line in escalations)
         if changes:
             rationale_lines.append(f"{len(changes)} change(s) from what is submitted:")
             for change in changes:
@@ -369,9 +389,7 @@ class BotContext:
         recommendation = Recommendation(
             kind=RecommendationKind.LINEUP,
             payload=LineupPayload(
-                capability=__import__(
-                    "mflbot.mfl.endpoints", fromlist=["Capability"]
-                ).Capability.SUBMIT_LINEUP,
+                capability=Capability.SUBMIT_LINEUP,
                 league_id=self.config.league.id,
                 franchise_id=franchise_id,
                 week=week,
@@ -395,7 +413,7 @@ class BotContext:
         )
         self.store.save(recommendation)
 
-        urgent = bool(solution.urgent_risks())
+        urgent = bool(escalations) or bool(solution.urgent_risks())
         self.notifier.send(
             f"Week {week} lineup: {len(changes) or 'no'} change(s) recommended",
             recommendation.render(),
@@ -403,11 +421,37 @@ class BotContext:
         )
         return f"Created lineup recommendation {recommendation.id}"
 
-    def _submitted_starters(self, franchise_id: str, week: int) -> list[str]:
-        """Read the lineup currently submitted, if the endpoint exposes it.
+    def _escalations(self, submitted, lookup, injuries, playing, settings) -> list[str]:
+        """Submitted starters who will not play, when lock is close enough to shout.
 
-        Returns an empty list when it cannot be read, which the caller reports
-        as a caveat rather than treating as "nothing is set".
+        ``[lineup] escalate_within_hours`` sets "close enough". With the deadline
+        unknown there is no way to say how close it is, so it always counts.
+        """
+        from .analysis.lineup import is_designated_out
+
+        deadline = settings.lineup_deadline
+        window = timedelta(hours=self.config.lineup.escalate_within_hours)
+        if deadline is not None and deadline - datetime.now(UTC) > window:
+            return []
+        lines = []
+        for player_id in submitted:
+            player = lookup.get(player_id)
+            name = player.display if player else player_id
+            status = injuries.get(player_id)
+            if is_designated_out(status):
+                lines.append(f"{name} is designated {status}")
+            elif player is not None and playing and (player.nfl_team or "") not in playing:
+                lines.append(f"{name} is on bye")
+        return lines
+
+    def _submitted_starters(self, franchise_id: str, week: int) -> list[str]:
+        """Read this franchise's currently submitted starters, if exposed.
+
+        ``weeklyResults`` covers every matchup in the league, so only the
+        subtree belonging to ``franchise_id`` is read -- otherwise every other
+        team's starters would be counted as yours. Returns an empty list when
+        it cannot be read, which the caller reports as a caveat rather than
+        treating as "nothing is set".
         """
         try:
             payload = self.client.export(
@@ -416,24 +460,7 @@ class BotContext:
         except Exception as exc:  # noqa: BLE001
             log.info("Could not read the submitted lineup: %s", exc)
             return []
-        from .analysis.rules_parser import mfl_text
-
-        def walk(node: Any) -> list[str]:
-            found: list[str] = []
-            if isinstance(node, dict):
-                if mfl_text(node.get("id")) and mfl_text(node.get("status")) == "starter":
-                    pid = mfl_text(node.get("id"))
-                    if pid:
-                        found.append(pid)
-                for value in node.values():
-                    found.extend(walk(value))
-            elif isinstance(node, list):
-                for value in node:
-                    found.extend(walk(value))
-            return found
-
-        franchise_blob = payload
-        return walk(franchise_blob)
+        return submitted_starters(payload, franchise_id)
 
     def run_waiver_analysis(self, week: int | None = None) -> str:
         blocked = self._blocked("waivers")
@@ -556,3 +583,44 @@ class BotContext:
         ) as write_client:
             executor = Executor(write_client, self.client, self.repos, self.store)
             return executor.execute(recommendation, token)
+
+
+def submitted_starters(payload: Any, franchise_id: str) -> list[str]:
+    """Starters marked for ``franchise_id`` in a ``weeklyResults`` payload.
+
+    Finds the node whose id is this franchise and that lists players, then
+    collects the players under it marked ``starter``. No such node means an
+    empty list, never another franchise's lineup.
+    """
+    from .analysis.rules_parser import mfl_text
+
+    def find(node: Any) -> dict | None:
+        if isinstance(node, dict):
+            if mfl_text(node.get("id")) == franchise_id and "player" in node:
+                return node
+            children = node.values()
+        elif isinstance(node, list):
+            children = node
+        else:
+            return None
+        for child in children:
+            found = find(child)
+            if found is not None:
+                return found
+        return None
+
+    def starters(node: Any) -> list[str]:
+        found: list[str] = []
+        if isinstance(node, dict):
+            pid = mfl_text(node.get("id"))
+            if pid and mfl_text(node.get("status")) == "starter":
+                found.append(pid)
+            for value in node.values():
+                found.extend(starters(value))
+        elif isinstance(node, list):
+            for value in node:
+                found.extend(starters(value))
+        return found
+
+    franchise = find(payload)
+    return starters(franchise.get("player")) if franchise is not None else []

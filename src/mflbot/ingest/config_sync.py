@@ -69,6 +69,18 @@ class FieldProbe:
             self.missed.append(f"{label} present as {raw!r} but not a number")
             return None
 
+    def time(self, label: str, *candidates: str) -> datetime | None:
+        """A timestamp field. A value that is present but not a recognisable
+        time is recorded as a miss too -- found-but-unusable is not found."""
+        raw = self.text(label, *candidates)
+        if raw is None:
+            return None
+        parsed = _parse_epoch_or_iso(raw)
+        if parsed is None:
+            self.found.pop(label, None)
+            self.missed.append(f"{label} present as {raw!r} but not a recognisable time")
+        return parsed
+
     def number(self, label: str, *candidates: str) -> float | None:
         raw = self.text(label, *candidates)
         if raw is None:
@@ -241,18 +253,30 @@ def parse_league_settings(
         "waiver_type", "waiverType", "waivers", "waiverSystem", "waiverRule"
     )
     roster_size = probe.integer("roster_size", "rosterSize", "rosterLimit")
-    starter_count = probe.integer("starter_count", "starterCount", "startersCount")
     taxi = probe.integer("taxi_squad_size", "taxiSquad", "taxiSquadSize")
     ir = probe.integer("injured_reserve", "injuredReserve", "irSize")
-    trade_deadline = _parse_epoch_or_iso(
-        probe.text("trade_deadline", "tradeDeadline", "tradeEndDate")
-    )
-    lineup_deadline = _parse_epoch_or_iso(
-        probe.text("lineup_deadline", "lineupDeadline", "startWeekDeadline",
-                   "standingsSort")
-    )
+    trade_deadline = probe.time("trade_deadline", "tradeDeadline", "tradeEndDate")
+    lineup_deadline = probe.time("lineup_deadline", "lineupDeadline", "startWeekDeadline")
 
-    slots, slot_misses = parse_lineup_slots(root.get("starters"))
+    starters_node = root.get("starters")
+    slots, slot_misses = parse_lineup_slots(starters_node)
+    # The total number of starters may be on the league itself or on its
+    # starters section; either is read, and neither is required.
+    starter_count = FieldProbe(root).integer(
+        "starter_count", "starterCount", "startersCount"
+    )
+    if starter_count is None and isinstance(starters_node, dict):
+        starter_count = FieldProbe(starters_node).integer("starter_count", "count")
+    if starter_count is None:
+        if slots and all(s.min_starters == s.max_starters for s in slots):
+            # Every slot is a fixed size, so the total is not in doubt.
+            starter_count = sum(s.min_starters for s in slots)
+        elif slots:
+            probe.missed.append(
+                "starter_count (tried: starterCount, startersCount, starters.count) -- "
+                "needed because a lineup slot allows a range of starters; without "
+                "it only each slot's minimum is filled"
+            )
     franchises_node = root.get("franchises")
     franchises = parse_franchises(franchises_node, owner_franchise_id)
     franchise_count = None
@@ -267,9 +291,7 @@ def parse_league_settings(
         name=name,
         franchise_count=franchise_count,
         roster_size=roster_size,
-        starter_count=starter_count if starter_count is not None else (
-            sum(s.min_starters for s in slots) or None
-        ),
+        starter_count=starter_count,
         taxi_squad_size=taxi,
         injured_reserve=ir,
         waiver_type_raw=waiver_type_raw,

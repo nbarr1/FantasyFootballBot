@@ -590,6 +590,13 @@ class Repositories:
         row = self.db.query_one("SELECT value FROM ingest_state WHERE key=?", (key,))
         return row["value"] if row else None
 
+    def get_state_entry(self, key: str) -> tuple[str, datetime | None] | None:
+        """A state value together with when it was last written."""
+        row = self.db.query_one(
+            "SELECT value, updated_at FROM ingest_state WHERE key=?", (key,)
+        )
+        return (row["value"], _parse_dt(row["updated_at"])) if row else None
+
     # -- audit --------------------------------------------------------------
 
     @atomic
