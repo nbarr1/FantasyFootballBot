@@ -1,9 +1,14 @@
 """Turns an approved recommendation into a confirmed MFL action.
 
 The executor consumes ``(recommendation, approval_token)`` pairs and nothing
-else. Around the submission itself it does three things that matter as much as
+else. Around the submission itself it does four things that matter as much as
 the write:
 
+0. **Confirms the approval still stands.** The recommendation is re-read from
+   the store, and it must be ``approved`` *now* -- not when the caller loaded
+   it -- and the token must have been issued for this recommendation. A
+   rejected, edited or already-executed recommendation is refused, whatever
+   token accompanies it.
 1. **Re-validates preconditions immediately before submitting.** Approval
    happened at some earlier moment; the world may have moved. If it has, the
    action is abandoned rather than adapted.
@@ -24,7 +29,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..approval.token import ApprovalToken
-from ..errors import ApprovalError, PreconditionFailed, TransportError
+from ..errors import MFLBotError, PreconditionFailed, TransportError
 from ..recommend.models import (
     AddDropPayload,
     LineupPayload,
@@ -167,9 +172,52 @@ class Executor:
 
     # -- execution ----------------------------------------------------------
 
+    def authorisation_refusal(
+        self, recommendation: Recommendation | None, token: ApprovalToken
+    ) -> str | None:
+        """Why this token may not drive this recommendation, or None if it may."""
+        if recommendation is None:
+            return "That recommendation is not on record; nothing was submitted."
+        if getattr(token, "recommendation_id", None) != recommendation.id:
+            return (
+                f"Approval token {token.token_id} was issued for recommendation "
+                f"{getattr(token, 'recommendation_id', '?')}, not {recommendation.id}. "
+                f"An approval authorises only the recommendation it was given for. "
+                f"Nothing was submitted."
+            )
+        if recommendation.status != RecommendationStatus.APPROVED:
+            return (
+                f"Recommendation {recommendation.id} is {recommendation.status}, not "
+                f"approved, so it cannot be submitted. Nothing was submitted."
+            )
+        return None
+
+    def _refuse(self, recommendation_id: str, token, capability, summary: str,
+                reason: str) -> ExecutionOutcome:
+        """Record a refusal that sent nothing and leaves the recommendation as it was."""
+        self._repos.audit(
+            recommendation_id=recommendation_id,
+            token_id=getattr(token, "token_id", None),
+            capability=str(capability) if capability else None,
+            request_summary=summary,
+            outcome="refused",
+            response_summary=reason,
+        )
+        return ExecutionOutcome(recommendation_id, submitted=False, confirmed=False,
+                                message=reason)
+
     def execute(
         self, recommendation: Recommendation, token: ApprovalToken
     ) -> ExecutionOutcome:
+        # Decide on the stored recommendation, never the caller's copy: it may
+        # have been loaded before an approval, a rejection or an edit.
+        current = self._store.get(recommendation.id)
+        refusal = self.authorisation_refusal(current, token)
+        if refusal is not None:
+            source = current or recommendation
+            return self._refuse(recommendation.id, token, source.payload.capability,
+                                source.payload.describe(), refusal)
+        recommendation = current
         payload = recommendation.payload
         capability = payload.capability
 
@@ -199,7 +247,9 @@ class Executor:
 
         try:
             result = self._write.submit(payload, token)
-        except (ApprovalError, TransportError) as exc:
+        except TransportError as exc:
+            # Raised after the token was spent: the request may or may not have
+            # reached MFL, so the action is over and a retry needs a new approval.
             self._repos.audit(
                 recommendation_id=recommendation.id,
                 token_id=token.token_id,
@@ -212,6 +262,13 @@ class Executor:
             return ExecutionOutcome(
                 recommendation.id, submitted=False, confirmed=False, message=str(exc)
             )
+        except MFLBotError as exc:
+            # Everything else the write client raises -- a refused token, an
+            # unverified endpoint, an incomplete payload, no write session --
+            # happens before anything is sent. Nothing about the action itself
+            # failed, so its status is left as it was.
+            return self._refuse(recommendation.id, token, capability,
+                                payload.describe(), f"Not submitted: {exc}")
 
         confirmed, note = (False, "not checked")
         if result.succeeded:

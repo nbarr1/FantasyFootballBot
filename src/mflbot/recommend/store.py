@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..mfl.endpoints import Capability
-from ..storage.db import Database, utc_now_iso
+from ..storage.db import Database, atomic, utc_now_iso
 from .models import (
     ActionPayload,
     AddDropPayload,
@@ -58,6 +58,7 @@ def payload_from_dict(kind: str, data: dict[str, Any]) -> ActionPayload:
 class RecommendationStore:
     db: Database
 
+    @atomic
     def save(self, recommendation: Recommendation) -> Recommendation:
         self.db.execute(
             """
@@ -74,8 +75,9 @@ class RecommendationStore:
             (
                 recommendation.id,
                 str(recommendation.kind),
-                recommendation.created_at.isoformat(),
-                recommendation.expires_at.isoformat(),
+                # UTC always: expire_stale() compares these as strings.
+                recommendation.created_at.astimezone(UTC).isoformat(),
+                recommendation.expires_at.astimezone(UTC).isoformat(),
                 str(recommendation.status),
                 canonical_json(recommendation.payload_dict),
                 recommendation.payload_hash,
@@ -85,7 +87,6 @@ class RecommendationStore:
                 json.dumps(list(recommendation.caveats)),
             ),
         )
-        self.db.commit()
         return recommendation
 
     def _row_to_recommendation(self, row) -> Recommendation:
@@ -130,6 +131,7 @@ class RecommendationStore:
         )
         return [self._row_to_recommendation(r) for r in rows]
 
+    @atomic
     def set_status(
         self, recommendation_id: str, status: RecommendationStatus
     ) -> None:
@@ -138,8 +140,8 @@ class RecommendationStore:
             f"UPDATE recommendations SET status=?, {column}=? WHERE id=?",  # noqa: S608
             (str(status), utc_now_iso(), recommendation_id),
         )
-        self.db.commit()
 
+    @atomic
     def replace_payload(
         self, recommendation_id: str, payload: ActionPayload
     ) -> Recommendation | None:
@@ -152,16 +154,23 @@ class RecommendationStore:
         self.save(recommendation)
         return recommendation
 
+    @atomic
     def expire_stale(self) -> int:
         """Mark elapsed recommendations expired.
 
         Expiry is the *only* terminal state silence can produce. A recommendation
-        never ages into execution.
+        never ages into execution. That includes one that was approved but
+        never submitted: its approval died with it, and leaving it "approved"
+        would show a decision that can no longer be acted on.
         """
         now = datetime.now(UTC).isoformat()
         cursor = self.db.execute(
-            "UPDATE recommendations SET status=? WHERE status=? AND expires_at < ?",
-            (str(RecommendationStatus.EXPIRED), str(RecommendationStatus.PROPOSED), now),
+            "UPDATE recommendations SET status=? WHERE status IN (?, ?) AND expires_at < ?",
+            (
+                str(RecommendationStatus.EXPIRED),
+                str(RecommendationStatus.PROPOSED),
+                str(RecommendationStatus.APPROVED),
+                now,
+            ),
         )
-        self.db.commit()
         return cursor.rowcount or 0

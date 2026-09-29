@@ -8,11 +8,16 @@ Commands (via ``bot``):
     bot reject <id> [note]   reject it; no token is produced
     bot edit <id> k=v ...    change the action, then approve it separately
 
-Two properties this implementation is careful about:
+Properties this implementation is careful about:
 
 * Approving one item never touches another. There is no "approve all".
-* An edit invalidates any token already issued, because the token signs the
-  payload hash and the edit changes it.
+* An edit invalidates any token already issued: the token signs the payload
+  hash and the edit changes it, and the edit also revokes the token outright
+  and returns the recommendation to ``proposed`` for a fresh decision.
+* Rejecting withdraws any approval already given. A token minted before the
+  rejection is revoked, so nothing can spend it afterwards.
+* Decisions are only taken on live recommendations. An executed, failed,
+  rejected or expired one is a record, not something to re-decide.
 """
 
 from __future__ import annotations
@@ -90,20 +95,31 @@ class CLIApprovalChannel(ApprovalChannel):
         return recommendation
 
     def approve(self, recommendation_id: str, *, actor: str = "cli") -> ApprovalDecision:
-        recommendation = self._load(recommendation_id)
-        if recommendation.status != RecommendationStatus.PROPOSED:
-            raise ApprovalError(
-                f"Recommendation {recommendation_id} is already "
-                f"{recommendation.status}; it cannot be approved again."
-            )
-        if recommendation.is_expired:
-            raise ApprovalError(
-                f"Recommendation {recommendation_id} expired at "
-                f"{recommendation.expires_at:%Y-%m-%d %H:%M UTC}. Re-run the analysis "
-                f"for a current recommendation."
-            )
-        token = self._tokens.issue(recommendation, actor)
-        self._store.set_status(recommendation_id, RecommendationStatus.APPROVED)
+        with self._store.db.transaction():
+            recommendation = self._load(recommendation_id)
+            if recommendation.status == RecommendationStatus.APPROVED:
+                # Approving again is allowed only once the earlier approval can
+                # no longer be spent -- its token expired before submission.
+                # While one is live, a second would be a second authorisation
+                # for the same action.
+                if self._tokens.latest_for(recommendation_id) is not None:
+                    raise ApprovalError(
+                        f"Recommendation {recommendation_id} is already approved and "
+                        f"that approval is still live; it cannot be approved again."
+                    )
+            elif recommendation.status != RecommendationStatus.PROPOSED:
+                raise ApprovalError(
+                    f"Recommendation {recommendation_id} is already "
+                    f"{recommendation.status}; it cannot be approved again."
+                )
+            if recommendation.is_expired:
+                raise ApprovalError(
+                    f"Recommendation {recommendation_id} expired at "
+                    f"{recommendation.expires_at:%Y-%m-%d %H:%M UTC}. Re-run the "
+                    f"analysis for a current recommendation."
+                )
+            token = self._tokens.issue(recommendation, actor)
+            self._store.set_status(recommendation_id, RecommendationStatus.APPROVED)
         log.info("approved %s by %s", recommendation_id, actor)
         return ApprovalDecision(
             recommendation_id=recommendation_id,
@@ -114,9 +130,16 @@ class CLIApprovalChannel(ApprovalChannel):
     def reject(
         self, recommendation_id: str, *, actor: str = "cli", note: str = ""
     ) -> ApprovalDecision:
-        self._load(recommendation_id)
-        self._store.set_status(recommendation_id, RecommendationStatus.REJECTED)
-        log.info("rejected %s by %s", recommendation_id, actor)
+        """Reject a live recommendation, withdrawing any approval already given."""
+        with self._store.db.transaction():
+            recommendation = self._load(recommendation_id)
+            _require_live(recommendation, "rejected")
+            revoked = self._tokens.revoke_for(recommendation_id, f"rejected by {actor}")
+            self._store.set_status(recommendation_id, RecommendationStatus.REJECTED)
+        log.info(
+            "rejected %s by %s%s", recommendation_id, actor,
+            f" (revoked {revoked} approval)" if revoked else "",
+        )
         return ApprovalDecision(
             recommendation_id=recommendation_id,
             decision=Decision.REJECT,
@@ -126,8 +149,14 @@ class CLIApprovalChannel(ApprovalChannel):
     def edit(
         self, recommendation_id: str, changes: dict, *, actor: str = "cli"
     ) -> ApprovalDecision:
-        """Apply field edits. Does **not** approve -- that is a separate act."""
+        """Apply field edits. Does **not** approve -- that is a separate act.
+
+        Editing an approved recommendation withdraws the approval: its token is
+        revoked and the recommendation goes back to ``proposed``, so the edited
+        action needs (and can receive) a fresh approval.
+        """
         recommendation = self._load(recommendation_id)
+        _require_live(recommendation, "edited")
         payload = recommendation.payload
 
         rejected = set(changes) - EDITABLE_FIELDS
@@ -148,7 +177,13 @@ class CLIApprovalChannel(ApprovalChannel):
             key: _coerce(payload, key, value) for key, value in changes.items()
         }
         edited: ActionPayload = dataclasses.replace(payload, **coerced)
-        self._store.replace_payload(recommendation_id, edited)
+        with self._store.db.transaction():
+            # Re-checked inside the transaction, so a concurrent decision on the
+            # same recommendation cannot slip in between the check and the write.
+            _require_live(self._load(recommendation_id), "edited")
+            self._tokens.revoke_for(recommendation_id, f"payload edited by {actor}")
+            self._store.replace_payload(recommendation_id, edited)
+            self._store.set_status(recommendation_id, RecommendationStatus.PROPOSED)
         log.info("edited %s by %s: %s", recommendation_id, actor, sorted(changes))
         return ApprovalDecision(
             recommendation_id=recommendation_id,
@@ -161,6 +196,18 @@ class CLIApprovalChannel(ApprovalChannel):
     def notify(self, message: str, *, urgent: bool = False) -> None:
         if self._notifier is not None:
             self._notifier.send("mflbot", message, urgent=urgent)
+
+
+#: Statuses a user may still decide on. Everything else is a record.
+_LIVE_STATUSES = frozenset({RecommendationStatus.PROPOSED, RecommendationStatus.APPROVED})
+
+
+def _require_live(recommendation: Recommendation, verb: str) -> None:
+    if recommendation.status not in _LIVE_STATUSES:
+        raise ApprovalError(
+            f"Recommendation {recommendation.id} is {recommendation.status}; it "
+            f"cannot be {verb}. Re-run the analysis if you want a current one."
+        )
 
 
 def _coerce(payload: ActionPayload, field_name: str, value: str):

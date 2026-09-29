@@ -422,6 +422,54 @@ def test_no_submit_mode_records_approval_but_never_writes(context, monkeypatch) 
         )
 
 
+def test_rejecting_after_approving_means_submit_sends_nothing(
+    signed_in, context, monkeypatch
+) -> None:
+    """A second tab still showing Submit must not be able to spend an approval
+    the user has since withdrawn."""
+    monkeypatch.setattr(
+        BotContext,
+        "execute_approved",
+        lambda *a, **k: pytest.fail("a rejected recommendation reached the executor"),
+    )
+    recommendation = only_recommendation(context)
+    form = csrf_token(signed_in)
+    signed_in.post(f"/recommendations/{recommendation.id}/approve", data={"csrf_token": form})
+    signed_in.post(f"/recommendations/{recommendation.id}/reject", data={"csrf_token": form})
+
+    response = signed_in.post(
+        f"/recommendations/{recommendation.id}/submit",
+        data={"csrf_token": form},
+        follow_redirects=True,
+    )
+
+    assert "no live approval" in response.text
+    assert context.store.get(recommendation.id).status == RecommendationStatus.REJECTED
+
+
+def test_an_approved_recommendation_can_be_edited_and_approved_again(
+    signed_in, context
+) -> None:
+    recommendation = only_recommendation(context)
+    form = csrf_token(signed_in)
+    signed_in.post(f"/recommendations/{recommendation.id}/approve", data={"csrf_token": form})
+    first = context.tokens.latest_for(recommendation.id)
+
+    page = signed_in.get(f"/recommendations/{recommendation.id}").text
+    assert "Withdraw approval and reject" in page
+    signed_in.post(
+        f"/recommendations/{recommendation.id}/edit",
+        data={"csrf_token": form, "field_week": str(WEEK + 1)},
+    )
+    assert context.store.get(recommendation.id).status == RecommendationStatus.PROPOSED
+    assert context.tokens.latest_for(recommendation.id) is None
+
+    signed_in.post(f"/recommendations/{recommendation.id}/approve", data={"csrf_token": form})
+    second = context.tokens.latest_for(recommendation.id)
+    assert second is not None and second.token_id != first.token_id
+    assert second.payload_hash == context.store.get(recommendation.id).payload_hash
+
+
 # ---------------------------------------------------------------------------
 # the job bridge
 # ---------------------------------------------------------------------------

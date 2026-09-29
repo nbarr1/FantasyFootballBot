@@ -88,8 +88,9 @@ class FakeWriteClient:
         )
 
 
-class FakeToken:
-    token_id = "tok-1"
+def token_for(recommendation):
+    """Stands in for the token an approval of ``recommendation`` would mint."""
+    return SimpleNamespace(token_id="tok-1", recommendation_id=recommendation.id)
 
 
 def add_drop_recommendation(store, **kw):
@@ -107,6 +108,7 @@ def add_drop_recommendation(store, **kw):
         rationale="synthetic",
         evidence=Evidence(),
         confidence=Confidence.MEDIUM,
+        status=RecommendationStatus.APPROVED,
     )
     store.save(recommendation)
     return recommendation
@@ -120,7 +122,7 @@ def test_claimed_player_aborts_the_write_and_is_audited(repos, store) -> None:
     write = FakeWriteClient()
     executor = Executor(write, read, repos, store)
 
-    outcome = executor.execute(recommendation, FakeToken())
+    outcome = executor.execute(recommendation, token_for(recommendation))
 
     assert write.calls == [], "nothing may be submitted once a precondition fails"
     assert not outcome.submitted
@@ -140,7 +142,7 @@ def test_expired_recommendation_is_never_submitted(repos, store) -> None:
 
     write = FakeWriteClient()
     executor = Executor(write, FakeReadClient(), repos, store)
-    outcome = executor.execute(recommendation, FakeToken())
+    outcome = executor.execute(recommendation, token_for(recommendation))
 
     assert write.calls == []
     assert not outcome.submitted
@@ -167,12 +169,13 @@ def test_lineup_past_lock_is_refused(repos, store, synthetic_settings) -> None:
     recommendation = Recommendation(
         kind=RecommendationKind.LINEUP, payload=payload, rationale="synthetic",
         evidence=Evidence(), confidence=Confidence.HIGH,
+        status=RecommendationStatus.APPROVED,
     )
     store.save(recommendation)
 
     write = FakeWriteClient()
     executor = Executor(write, FakeReadClient(), repos, store)
-    outcome = executor.execute(recommendation, FakeToken())
+    outcome = executor.execute(recommendation, token_for(recommendation))
 
     assert write.calls == []
     assert "locked" in outcome.message
@@ -189,7 +192,7 @@ def test_successful_write_is_confirmed_by_re_reading_league_state(repos, store) 
     )
     executor = Executor(FakeWriteClient(), read, repos, store)
 
-    outcome = executor.execute(recommendation, FakeToken())
+    outcome = executor.execute(recommendation, token_for(recommendation))
 
     assert outcome.submitted and outcome.confirmed
     assert "rosters" in read.reads, "confirmation must re-read, not trust the response"
@@ -208,7 +211,7 @@ def test_accepted_but_unconfirmed_write_is_reported_honestly(repos, store) -> No
     )
     executor = Executor(FakeWriteClient(), read, repos, store)
 
-    outcome = executor.execute(recommendation, FakeToken())
+    outcome = executor.execute(recommendation, token_for(recommendation))
 
     assert outcome.submitted and not outcome.confirmed
     assert "did not confirm" in outcome.message
@@ -229,7 +232,7 @@ def test_rejected_write_is_not_retried(repos, store) -> None:
     )
     executor = Executor(write, read, repos, store)
 
-    outcome = executor.execute(recommendation, FakeToken())
+    outcome = executor.execute(recommendation, token_for(recommendation))
 
     assert len(write.calls) == 1, "a rejected write must not be retried automatically"
     assert not outcome.ok
@@ -246,7 +249,7 @@ def test_every_attempt_leaves_an_audit_trail(repos, store) -> None:
         }
     )
     executor = Executor(FakeWriteClient(), read, repos, store)
-    executor.execute(recommendation, FakeToken())
+    executor.execute(recommendation, token_for(recommendation))
 
     entries = repos.audit_entries()
     outcomes = [e["outcome"] for e in entries]
@@ -269,7 +272,76 @@ def test_audit_entries_never_contain_credentials(repos, store) -> None:
         )
     )
     executor = Executor(write, read, repos, store)
-    executor.execute(recommendation, FakeToken())
+    executor.execute(recommendation, token_for(recommendation))
 
     blob = str(repos.audit_entries())
     assert "sekret" not in blob and "hunter2" not in blob
+
+
+# ---------------------------------------------------------------------------
+# The approval must still stand, and must be for this recommendation.
+# ---------------------------------------------------------------------------
+
+def test_a_rejected_recommendation_is_never_submitted(repos, store) -> None:
+    recommendation = add_drop_recommendation(store)
+    store.set_status(recommendation.id, RecommendationStatus.REJECTED)
+    write = FakeWriteClient()
+    executor = Executor(write, FakeReadClient(), repos, store)
+
+    # The caller's copy still says "approved" -- a stale tab, say.
+    outcome = executor.execute(recommendation, token_for(recommendation))
+
+    assert write.calls == []
+    assert not outcome.submitted
+    assert "rejected" in outcome.message
+    assert store.get(recommendation.id).status == RecommendationStatus.REJECTED
+    assert [e["outcome"] for e in repos.audit_entries()] == ["refused"]
+
+
+def test_a_token_for_another_recommendation_is_refused(repos, store) -> None:
+    approved = add_drop_recommendation(store)
+    twin = add_drop_recommendation(store)  # same payload, different recommendation
+    write = FakeWriteClient()
+    executor = Executor(write, FakeReadClient(), repos, store)
+
+    outcome = executor.execute(twin, token_for(approved))
+
+    assert write.calls == []
+    assert "not " + twin.id in outcome.message
+    assert store.get(twin.id).status == RecommendationStatus.APPROVED
+    assert store.get(approved.id).status == RecommendationStatus.APPROVED
+
+
+def test_the_stored_status_decides_not_the_callers_copy(repos, store) -> None:
+    """`bot approve` loads the recommendation before approving it, so its copy
+    says "proposed". The executor must go by what is stored now."""
+    import dataclasses
+
+    recommendation = add_drop_recommendation(store)
+    stale_copy = dataclasses.replace(recommendation, status=RecommendationStatus.PROPOSED)
+    read = FakeReadClient(
+        {
+            "freeAgents": free_agents_payload("p-fa1"),
+            "rosters": rosters_payload("0001", "p-fa1"),
+        }
+    )
+    outcome = Executor(FakeWriteClient(), read, repos, store).execute(
+        stale_copy, token_for(recommendation)
+    )
+    assert outcome.submitted
+
+
+def test_a_refused_token_leaves_the_recommendation_approved(repos, store) -> None:
+    from mflbot.errors import ApprovalError
+
+    recommendation = add_drop_recommendation(store)
+    read = FakeReadClient({"freeAgents": free_agents_payload("p-fa1")})
+    write = FakeWriteClient(raises=ApprovalError("token expired"))
+    outcome = Executor(write, read, repos, store).execute(
+        recommendation, token_for(recommendation)
+    )
+
+    assert not outcome.submitted
+    assert "token expired" in outcome.message
+    # Nothing about the action failed; the user can approve it again.
+    assert store.get(recommendation.id).status == RecommendationStatus.APPROVED

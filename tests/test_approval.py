@@ -209,3 +209,107 @@ def test_lineup_description_lists_every_starter_being_submitted() -> None:
         assert not missing, (
             f"slot_names={slot_names!r} dropped {missing} from the description"
         )
+
+
+# ---------------------------------------------------------------------------
+# Changing your mind: a withdrawn decision must stop authorising anything.
+# ---------------------------------------------------------------------------
+
+def test_rejecting_an_approved_recommendation_revokes_its_token(store, tokens) -> None:
+    recommendation = make_recommendation(store)
+    channel = CLIApprovalChannel(store, tokens, writer=lambda _: None)
+    token = channel.approve(recommendation.id).token
+
+    channel.reject(recommendation.id, note="changed my mind")
+
+    assert store.get(recommendation.id).status == RecommendationStatus.REJECTED
+    assert tokens.latest_for(recommendation.id) is None
+    with pytest.raises(ApprovalError, match="revoked"):
+        tokens.consume(token, recommendation.payload_hash)
+
+
+def test_editing_an_approved_recommendation_returns_it_for_a_fresh_decision(
+    store, tokens
+) -> None:
+    recommendation = make_recommendation(store)
+    channel = CLIApprovalChannel(store, tokens, writer=lambda _: None)
+    old_token = channel.approve(recommendation.id).token
+
+    channel.edit(recommendation.id, {"starter_ids": "p-qb2,p-rb2"})
+
+    edited = store.get(recommendation.id)
+    assert edited.status == RecommendationStatus.PROPOSED
+    assert tokens.latest_for(recommendation.id) is None
+    # The edit message says "approve again"; that has to actually work.
+    new_token = channel.approve(recommendation.id).token
+    tokens.verify(new_token, edited.payload_hash)
+    with pytest.raises(ApprovalError):
+        tokens.consume(old_token, edited.payload_hash)
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [
+        RecommendationStatus.REJECTED,
+        RecommendationStatus.EXECUTED,
+        RecommendationStatus.FAILED,
+        RecommendationStatus.EXPIRED,
+    ],
+)
+def test_a_terminal_recommendation_cannot_be_redecided(store, tokens, terminal) -> None:
+    recommendation = make_recommendation(store)
+    store.set_status(recommendation.id, terminal)
+    channel = CLIApprovalChannel(store, tokens, writer=lambda _: None)
+
+    with pytest.raises(ApprovalError):
+        channel.approve(recommendation.id)
+    with pytest.raises(ApprovalError):
+        channel.reject(recommendation.id)
+    with pytest.raises(ApprovalError):
+        channel.edit(recommendation.id, {"week": "6"})
+    stored = store.get(recommendation.id)
+    assert stored.status == terminal
+    assert stored.payload == recommendation.payload, "an executed action's record was rewritten"
+
+
+def test_approving_again_is_allowed_once_the_earlier_approval_expired(store, tokens) -> None:
+    recommendation = make_recommendation(store)
+    channel = CLIApprovalChannel(store, tokens, writer=lambda _: None)
+    first = channel.approve(recommendation.id).token
+    store.db.execute(
+        "UPDATE approval_tokens SET expires_at='2000-01-01T00:00:00+00:00' WHERE token_id=?",
+        (first.token_id,),
+    )
+
+    second = channel.approve(recommendation.id).token
+
+    assert second.token_id != first.token_id
+    assert tokens.latest_for(recommendation.id).token_id == second.token_id
+
+
+def test_token_expiry_is_read_from_the_record_not_the_token_object(store, tokens) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    recommendation = make_recommendation(store)
+    token = tokens.issue(recommendation, "test")
+    store.db.execute(
+        "UPDATE approval_tokens SET expires_at='2000-01-01T00:00:00+00:00' WHERE token_id=?",
+        (token.token_id,),
+    )
+    extended = dataclasses.replace(token, expires_at=datetime.now(UTC) + timedelta(days=1))
+
+    with pytest.raises(ApprovalError, match="expired"):
+        tokens.verify(extended, recommendation.payload_hash)
+
+
+def test_an_approved_but_unsubmitted_recommendation_expires(store, tokens) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    recommendation = make_recommendation(store)
+    CLIApprovalChannel(store, tokens, writer=lambda _: None).approve(recommendation.id)
+    stored = store.get(recommendation.id)
+    stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    store.save(stored)
+
+    assert store.expire_stale() == 1
+    assert store.get(recommendation.id).status == RecommendationStatus.EXPIRED
