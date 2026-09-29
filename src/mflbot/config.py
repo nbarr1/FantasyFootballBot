@@ -147,6 +147,9 @@ class ScheduleSettings:
     league_state_poll_minutes: int = 45
     config_refresh_cron: str = "0 5 * * *"
     player_db_refresh_cron: str = "30 5 * * *"
+    #: This week's and next week's projections. After the config refresh, so a
+    #: week rollover is picked up the same morning.
+    projections_refresh_cron: str = "45 5 * * *"
     waiver_analysis_cron: str = "0 22 * * 1"
     trade_analysis_cron: str = "0 20 * * 3"
     #: How often the watchdog checks whether the other jobs are keeping up, and

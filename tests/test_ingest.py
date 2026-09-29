@@ -151,3 +151,29 @@ def test_news_deduplicates_but_a_changed_status_is_new(repos) -> None:
     assert len(repos.save_news([item("QUESTIONABLE")])) == 1
     assert repos.save_news([item("QUESTIONABLE")]) == []
     assert len(repos.save_news([item("OUT")])) == 1
+
+
+def test_a_status_only_roster_change_is_a_change(repos) -> None:
+    """Moving a player to IR changes who can start without changing who is
+    rostered, so it must still count as a roster change."""
+    from types import SimpleNamespace
+
+    from mflbot.ingest.league_state import poll_league_state
+
+    def client_with(status):
+        payloads = {
+            "transactions": {"transactions": {"transaction": []}},
+            "rosters": {"rosters": {"franchise": {
+                "id": "0001", "player": [{"id": "p-rb1", "status": status}]}}},
+            "freeAgents": {"freeAgents": {"leagueUnit": {"player": []}}},
+        }
+        return SimpleNamespace(
+            league=SimpleNamespace(id="TEST0001", season=2026),
+            export=lambda t, **k: SimpleNamespace(payload=payloads[t]),
+        )
+
+    poll_league_state(client_with("ROSTER"), repos)
+    diff = poll_league_state(client_with("INJURED_RESERVE"), repos)
+    assert diff.roster_changed
+    [entry] = repos.current_rosters("TEST0001", 2026)["0001"]
+    assert not entry.is_active_roster

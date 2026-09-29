@@ -23,7 +23,7 @@ from .approval.cli_channel import CLIApprovalChannel
 from .approval.token import TokenService
 from .config import Config
 from .domain.models import LeagueSettings, Player
-from .errors import Missing
+from .errors import BlockedFeature, Missing
 from .mfl.client import MFLReadClient
 from .mfl.endpoints import Capability, EndpointRegistry
 from .notify.registry import build_notifier
@@ -280,10 +280,33 @@ class BotContext:
     # -- analysis runs -----------------------------------------------------
 
     def _blocked(self, feature: str) -> str | None:
+        """A configuration-level block on ``feature``, if one is recorded."""
         for blocked in self.repos.blocked_features():
             if blocked.feature == feature:
                 return blocked.describe()
         return None
+
+    def _record_analysis_blocks(self, feature: str, blocks) -> None:
+        """Record why the latest analysis run could not proceed.
+
+        Stored under a key of its own, not the feature's. The feature's key
+        gates every analysis run and only a config sync clears it, so a
+        transient block stored there ("no free agent has a projection") kept
+        analysis blocked after the projections arrived, until the next daily
+        refresh. These are re-derived on every run and cleared by a clean one.
+        """
+        key = f"{feature} (last analysis)"
+        if not blocks:
+            self.repos.unblock_feature(key)
+            return
+        self.repos.block_feature(
+            BlockedFeature(
+                feature=key,
+                reason="; ".join(b.reason for b in blocks),
+                gaps=tuple(g for b in blocks for g in b.gaps),
+                remedy=blocks[0].remedy,
+            )
+        )
 
     def run_lineup_analysis(self, week: int | None = None) -> str:
         blocked = self._blocked("lineup")
@@ -511,8 +534,7 @@ class BotContext:
             settings, roster, free_agents, projections, week, remaining,
             self.config.waivers, news_by_player=news,
         )
-        for block in blocks:
-            self.repos.block_feature(block)
+        self._record_analysis_blocks("waivers", blocks)
         if blocks:
             return "\n".join(b.describe() for b in blocks)
         if not ideas:
@@ -568,8 +590,7 @@ class BotContext:
         ideas, blocks = draft_proposals(
             settings, our_values, theirs, self.config.trades
         )
-        for block in blocks:
-            self.repos.block_feature(block)
+        self._record_analysis_blocks("trades", blocks)
         if blocks:
             return "\n".join(b.describe() for b in blocks)
         if not ideas:
@@ -704,6 +725,11 @@ class BotContext:
         from .execute.executor import Executor
         from .mfl.write_client import MFLWriteClient
 
+        if self.client.auth.credentials.has_login:
+            # A fresh session for every write. The approval token is spent
+            # before the request is sent, so a session that expired since the
+            # last login would use up the approval on a write MFL refuses.
+            self.client.login()
         self.client.ensure_authenticated("executing an approved action")
         with MFLWriteClient(
             self.config.league,

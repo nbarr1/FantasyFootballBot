@@ -16,7 +16,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Dependencies first, so code edits do not invalidate the dependency layer.
+# The package installs from source, so a code edit re-runs this layer and
+# reinstalls its dependencies with it.
 COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir '.[solver,web]'
@@ -39,8 +40,10 @@ ENV MFLBOT_SECRETS_FILE="" \
 
 EXPOSE 8765
 
-HEALTHCHECK --interval=5m --timeout=30s --start-period=1m \
-    CMD ["bot", "status"]
+# Healthy means the scheduled jobs are keeping up: `bot heartbeat` exits 2 when
+# one is stale. (`bot status` always exits 0, so it could never fail a check.)
+HEALTHCHECK --interval=5m --timeout=30s --start-period=5m \
+    CMD ["bot", "heartbeat"]
 
 ENTRYPOINT ["bot"]
 CMD ["serve", "--host", "0.0.0.0", "--with-scheduler"]

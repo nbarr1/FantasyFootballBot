@@ -386,3 +386,39 @@ def test_caching_keeps_repeat_analysis_off_the_network(context) -> None:
         f"repeat analysis generated {after - before} requests; TTLs should have "
         f"served these from cache"
     )
+
+
+def test_an_analysis_block_clears_once_its_cause_does(context) -> None:
+    """"No projections yet" must not outlive the projections arriving."""
+    from mflbot.ingest.config_sync import sync_config
+    from mflbot.ingest.league_state import poll_league_state
+    from mflbot.ingest.players import sync_players
+    from mflbot.ingest.scores import sync_projections
+
+    sync_config(context.client, context.repos, owner_franchise_id="0001")
+    sync_players(context.client, context.repos)
+    poll_league_state(context.client, context.repos)
+
+    first = context.run_waiver_analysis(week=WEEK)
+    assert "BLOCKED" in first
+    assert any(b.feature == "waivers (last analysis)" for b in context.repos.blocked_features())
+
+    sync_projections(context.client, context.repos, WEEK)
+    second = context.run_waiver_analysis(week=WEEK)
+    assert "BLOCKED" not in second
+    assert not any("waivers" in b.feature for b in context.repos.blocked_features())
+
+
+def test_a_long_lived_session_is_renewed(context, monkeypatch) -> None:
+    from mflbot.mfl import client as client_module
+    from mflbot.mfl.auth import Credentials
+
+    logins = []
+    context.client.auth.credentials = Credentials(username="synthetic", password="x")
+    monkeypatch.setattr(type(context.client), "login", lambda self: logins.append(1) or True)
+    context.client._logged_in_at = 0.0  # a session from long ago
+    monkeypatch.setattr(client_module.time, "monotonic",
+                        lambda: client_module.SESSION_MAX_AGE_SECONDS + 10.0)
+
+    context.client.ensure_authenticated("a synthetic read")
+    assert logins == [1]

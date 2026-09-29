@@ -15,8 +15,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # Exact lineup optimisation. Without this the optimiser falls back to a greedy
-# solver that refuses to answer when it cannot prove greedy is optimal.
-solver = ["pulp>=2.8"]
+# solver that refuses to answer when it cannot prove greedy is optimal. Capped
+# below 4: PuLP 3 already warns that 4.0 removes the PULP_CBC_CMD API used here.
+solver = ["pulp>=2.8,<4"]
 # The web dashboard (`bot serve`). python-multipart is what parses the form
 # posts behind every approve/reject/edit button, so it is a hard requirement
 # rather than an optional nicety.

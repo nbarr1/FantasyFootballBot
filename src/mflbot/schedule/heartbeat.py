@@ -100,9 +100,11 @@ def monitored_jobs(config, *, multiplier: float | None = None) -> tuple[Monitore
     daily = timedelta(hours=26)
     return (
         MonitoredJob("league_state_poll", "League state poll", poll),
+        MonitoredJob("trade_offers", "Trade offer check", poll),
         MonitoredJob("news_ingest", "News ingestion", news),
         MonitoredJob("config_refresh", "Config refresh", daily),
         MonitoredJob("player_db_refresh", "Player database refresh", daily),
+        MonitoredJob("projections_refresh", "Projections refresh", daily),
     )
 
 

@@ -301,12 +301,14 @@ def poll_league_state(client, repos, *, force: bool = False) -> LeagueStateDiff:
     roster_entries = parse_rosters(
         client.export("rosters", L=league_id, force_refresh=force).payload
     )
+    # Status is part of the shape: moving a player to IR or the taxi squad
+    # changes who can start without changing who is rostered.
     new_shape = {
-        fid: sorted(e.player_id for e in entries)
+        fid: sorted((e.player_id, e.roster_status or "") for e in entries)
         for fid, entries in _group_by_franchise(roster_entries).items()
     }
     old_shape = {
-        fid: sorted(e.player_id for e in entries)
+        fid: sorted((e.player_id, e.roster_status or "") for e in entries)
         for fid, entries in previous_rosters.items()
     }
     if new_shape != old_shape:
