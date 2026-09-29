@@ -120,9 +120,21 @@ def evaluate_offer(
     we_give: Sequence[PlayerValue],
     our_strengths: dict[str, PositionStrength],
     trade_settings,
+    *,
+    unvalued_assets: Sequence[str] = (),
 ) -> OfferAssessment:
-    """Judge an incoming offer under this league's scoring and our roster shape."""
+    """Judge an incoming offer under this league's scoring and our roster shape.
+
+    ``unvalued_assets`` are pieces of the offer this bot cannot price (draft
+    picks, chiefly). Their presence rules out an accept or reject verdict: a
+    total that silently leaves out part of the deal is not a basis for one.
+    """
     caveats: list[str] = []
+    if unvalued_assets:
+        caveats.append(
+            f"The offer includes assets this bot does not value: "
+            f"{', '.join(unvalued_assets)}. They are left out of the totals."
+        )
 
     receive_value = sum(v.rest_of_season for v in we_receive if v.rest_of_season is not None)
     give_value = sum(v.rest_of_season for v in we_give if v.rest_of_season is not None)
@@ -156,6 +168,12 @@ def evaluate_offer(
 
     if net is None:
         verdict, reasoning = "counter", "The offer could not be valued."
+    elif unvalued_assets:
+        verdict = "counter"
+        reasoning = (
+            "Part of this offer (draft picks or other non-player assets) cannot be "
+            "valued, so this is not a decision to make on the numbers alone."
+        )
     elif unpriced:
         verdict = "counter"
         reasoning = (
@@ -188,7 +206,7 @@ def evaluate_offer(
 
     confidence = (
         Confidence.LOW
-        if unpriced or net is None
+        if unpriced or unvalued_assets or net is None
         else Confidence.HIGH
         if abs(net) >= trade_settings.min_accept_gain * 2
         else Confidence.MEDIUM

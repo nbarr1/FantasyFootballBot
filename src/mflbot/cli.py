@@ -333,6 +333,11 @@ def cmd_news(args, context: BotContext) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_analyse(args, context: BotContext) -> int:
+    if args.target == "offers":
+        # Offers are judged against the week that is current now, so --week
+        # does not apply.
+        print(context.run_offer_analysis())
+        return 0
     runners = {
         "lineup": context.run_lineup_analysis,
         "waivers": context.run_waiver_analysis,
@@ -714,12 +719,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("news", help="ingest player news").set_defaults(func=cmd_news)
 
     p = sub.add_parser("analyse", help="run an analysis engine (produces recommendations)")
-    p.add_argument("target", choices=["lineup", "waivers", "trades"])
+    p.add_argument("target", choices=["lineup", "waivers", "trades", "offers"])
     p.add_argument("--week", type=int)
     p.set_defaults(func=cmd_analyse)
     # American spelling alias.
     p = sub.add_parser("analyze", help=argparse.SUPPRESS)
-    p.add_argument("target", choices=["lineup", "waivers", "trades"])
+    p.add_argument("target", choices=["lineup", "waivers", "trades", "offers"])
     p.add_argument("--week", type=int)
     p.set_defaults(func=cmd_analyse)
 

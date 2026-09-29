@@ -232,6 +232,14 @@ JOB_SPECS: tuple[JobSpec, ...] = (
         (WEEK_PARAM,),
     ),
     JobSpec(
+        "analyse-offers",
+        "Analyse trade offers",
+        "Analyse",
+        "Evaluate trade offers made to you and recommend accepting or rejecting "
+        "each. Submits nothing.",
+        ("analyse", "offers"),
+    ),
+    JobSpec(
         "verify-endpoints",
         "Verify endpoints",
         "Verify",

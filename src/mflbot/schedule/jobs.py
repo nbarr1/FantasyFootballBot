@@ -10,9 +10,9 @@ Player database refresh      daily (MFL's stated limit)
 League-state diff            every 30-60 minutes in season
 News ingestion               every 30-60 minutes
 Waiver analysis              weekly, plus on any roster/free-agent diff
-Trade analysis               weekly, plus on an incoming offer
+Trade proposals              weekly
+Trade offers to you          every poll (each offer is evaluated once)
 Lineup analysis              computed from the league's real deadline
-Live scoring watch           inside NFL game windows only
 ===========================  ==========================================
 
 Analysis jobs produce recommendations and notify. **No job executes anything.**
@@ -80,17 +80,21 @@ class JobRunner:
     def poll_state(self) -> str:
         from ..ingest.league_state import poll_league_state
 
-        diff = poll_league_state(self.context.client, self.context.repos)
+        # Forced past the response cache: the cache's TTL for rosters and free
+        # agents is an hour, so an unforced poll could not notice a change any
+        # sooner than that, however often [schedule] asks it to run.
+        diff = poll_league_state(self.context.client, self.context.repos, force=True)
         if not diff.has_changes:
             return "no league changes"
 
         # A change is a trigger, not an action.
         if diff.roster_changed or diff.free_agents_changed:
             self.analyse_waivers()
-        offers = diff.incoming_trades(self.context.config.league.franchise_id)
-        if offers:
-            self.analyse_trades()
         return diff.summary()
+
+    def check_offers(self) -> str:
+        """Evaluate trade offers made to you. Each offer is handled once."""
+        return self.context.run_offer_analysis()
 
     def ingest_news(self) -> str:
         from ..ingest.news.registry import build_sources, ingest_news
@@ -124,21 +128,6 @@ class JobRunner:
     def heartbeat(self) -> str:
         """Check that the other jobs are keeping up; check in while they are."""
         return self._heartbeat.run().summary()
-
-    def watch_live_scoring(self) -> str:
-        """Poll live scoring during a game window.
-
-        In-game information is treated as a *next week* signal. A player going
-        quiet mid-game is not a reason to act now -- lineups are already locked --
-        so this job records and never proposes.
-        """
-        week = self.context.current_week()
-        if week is None:
-            return "current week unknown; skipping"
-        from ..ingest.scores import sync_scores
-
-        count = sync_scores(self.context.client, self.context.repos, week)
-        return f"live scoring week {week}: {count} rows"
 
 
 def lineup_run_times(
@@ -192,6 +181,8 @@ def build_scheduler(runner: JobRunner, config):
     register("player_db_refresh", runner.refresh_players,
              CronTrigger.from_crontab(schedule.player_db_refresh_cron, timezone="UTC"))
     register("league_state_poll", runner.poll_state,
+             IntervalTrigger(minutes=schedule.league_state_poll_minutes))
+    register("trade_offers", runner.check_offers,
              IntervalTrigger(minutes=schedule.league_state_poll_minutes))
     register("news_ingest", runner.ingest_news,
              IntervalTrigger(minutes=config.news.poll_minutes))

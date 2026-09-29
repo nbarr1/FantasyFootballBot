@@ -226,5 +226,11 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         notify=_build(NotifySettings, _section(raw, "notify"), "notify"),
         schedule=_build(ScheduleSettings, _section(raw, "schedule"), "schedule"),
         web=_build(WebSettings, _section(raw, "web"), "web"),
-        approval_channel=raw.get("approval_channel", "cli"),
+        approval_channel=_approval_channel(raw.get("approval_channel", "cli")),
     )
+
+
+def _approval_channel(value: Any) -> str:
+    if value not in ("cli", "web"):
+        raise ConfigError(f"approval_channel must be \"cli\" or \"web\", not {value!r}")
+    return value

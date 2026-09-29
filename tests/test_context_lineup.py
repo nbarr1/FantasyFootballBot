@@ -9,8 +9,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from mflbot.context import BotContext, submitted_starters
+from mflbot.context import BotContext
 from mflbot.domain.models import Player
+from mflbot.ingest.league_state import submitted_starters
 
 
 class ScheduleClient:

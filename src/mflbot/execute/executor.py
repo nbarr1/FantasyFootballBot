@@ -153,15 +153,25 @@ class Executor:
                 f"{settings.trade_deadline:%Y-%m-%d %H:%M UTC}."
             )
 
+    def _pending_offers(self, franchise_id: str):
+        """The pending trades involving ``franchise_id``, parsed and fresh."""
+        from ..ingest.league_state import parse_pending_trades
+
+        offers, _ = parse_pending_trades(
+            self._read.pending_trades(franchise=franchise_id, force_refresh=True)
+        )
+        return offers
+
     def _check_offer_still_open(self, payload: TradeResponsePayload) -> None:
         try:
-            pending = self._read.pending_trades(franchise=payload.franchise_id)
+            offers = self._pending_offers(payload.franchise_id)
         except Exception as exc:  # noqa: BLE001
             raise PreconditionFailed(
                 f"Could not confirm offer {payload.offer_id} is still open: {exc}"
             ) from exc
-        blob = str(pending)
-        if payload.offer_id not in blob:
+        # An exact id match on a parsed offer. A text search of the response
+        # would find "12" inside "123", or inside a timestamp.
+        if not any(o.trade_id == payload.offer_id for o in offers):
             raise PreconditionFailed(
                 f"Trade offer {payload.offer_id} is no longer pending -- it was "
                 f"withdrawn or already resolved. Nothing was submitted."
@@ -348,23 +358,42 @@ class Executor:
         return True, "roster reflects the add/drop"
 
     def _confirm_lineup(self, payload: LineupPayload) -> tuple[bool, str]:
+        """Read the submitted lineup back and compare it with what was sent.
+
+        Checking that the starters are on the roster proves nothing -- they
+        were before the write too. What counts is that MFL now lists exactly
+        these players as this franchise's starters for this week.
+        """
+        from ..ingest.league_state import submitted_starters
+
         response = self._read.export(
-            "rosters", L=payload.league_id, FRANCHISE=payload.franchise_id,
-            force_refresh=True,
+            "weeklyResults", L=payload.league_id, W=payload.week, force_refresh=True,
         ).payload
-        blob = str(response)
-        missing = [pid for pid in payload.starter_ids if pid not in blob]
-        if missing:
-            return False, f"{len(missing)} intended starter(s) not found in the re-read"
-        return True, "all intended starters are present on the franchise roster read"
+        now_starting = set(submitted_starters(response, payload.franchise_id))
+        if not now_starting:
+            return False, "the submitted lineup could not be read back"
+        intended = set(payload.starter_ids)
+        if now_starting == intended:
+            return True, "MFL lists exactly the intended starters"
+        missing, extra = intended - now_starting, now_starting - intended
+        return False, (
+            f"MFL's starters differ from what was sent: missing "
+            f"{sorted(missing) or 'none'}, unexpected {sorted(extra) or 'none'}"
+        )
 
     def _confirm_trade(self, payload) -> tuple[bool, str]:
-        pending = self._read.pending_trades(franchise=payload.franchise_id)
-        blob = str(pending)
+        offers = self._pending_offers(payload.franchise_id)
         if isinstance(payload, TradeProposalPayload):
-            if payload.to_franchise_id in blob:
+            match = any(
+                o.offering_franchise == payload.franchise_id
+                and o.offered_to == payload.to_franchise_id
+                and set(o.gives) == set(payload.gives_player_ids)
+                and set(o.receives) == set(payload.receives_player_ids)
+                for o in offers
+            )
+            if match:
                 return True, "the proposal appears in pending trades"
-            return False, "the proposal was not found in pending trades"
-        if payload.offer_id in blob:
+            return False, "no pending trade matches the proposal that was sent"
+        if any(o.trade_id == payload.offer_id for o in offers):
             return False, f"offer {payload.offer_id} is still pending"
         return True, "the offer is no longer pending, consistent with the response"

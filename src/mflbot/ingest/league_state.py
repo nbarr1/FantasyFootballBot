@@ -143,17 +143,6 @@ class LeagueStateDiff:
             self.new_transactions or self.roster_changed or self.free_agents_changed
         )
 
-    def incoming_trades(self, owner_franchise_id: str | None) -> list[Transaction]:
-        """New trade-related events involving the user's franchise."""
-        if not owner_franchise_id:
-            return []
-        return [
-            tx
-            for tx in self.new_transactions
-            if (tx.trans_type or "") in TRADE_TYPES
-            and owner_franchise_id in (tx.franchise_id or "")
-        ]
-
     def summary(self) -> str:
         bits = []
         if self.new_transactions:
@@ -166,6 +155,136 @@ class LeagueStateDiff:
                 f"-{len(self.removed_free_agents)})"
             )
         return "; ".join(bits) if bits else "no changes"
+
+
+# ---------------------------------------------------------------------------
+# Pending trade offers
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class PendingTrade:
+    """One offer awaiting a response, as the ``pendingTrades`` export lists it.
+
+    ``gives`` and ``receives`` are from the *offering* franchise's side, the
+    same way round as the ``WILL_GIVE_UP`` / ``WILL_RECEIVE`` parameters of the
+    ``tradeProposal`` import that creates an offer.
+    """
+
+    trade_id: str
+    offering_franchise: str
+    offered_to: str
+    gives: tuple[str, ...]
+    receives: tuple[str, ...]
+    expires: datetime | None = None
+    comments: str = ""
+
+    def assets_for(self, franchise_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """``(receive, give)`` from ``franchise_id``'s point of view."""
+        if franchise_id == self.offered_to:
+            return self.gives, self.receives
+        return self.receives, self.gives
+
+
+def _asset_list(raw: str | None) -> tuple[str, ...]:
+    return tuple(part.strip() for part in (raw or "").split(",") if part.strip())
+
+
+def parse_pending_trades(payload: Any) -> tuple[list[PendingTrade], list[str]]:
+    """Parse ``pendingTrades`` into offers, plus a note for each it could not read.
+
+    An offer is only returned when its id, both franchises and both asset lists
+    were found. A partial one is reported instead: a response recommendation
+    built from half an offer -- say, with the sides the wrong way round --
+    would be confidently wrong advice.
+    """
+    root = payload.get("pendingTrades") if isinstance(payload, dict) else None
+    if not isinstance(root, dict):
+        raise ParseError("The pendingTrades export did not contain a 'pendingTrades' object")
+    nodes = root.get("pendingTrade", [])
+    if isinstance(nodes, dict):
+        nodes = [nodes]
+    offers: list[PendingTrade] = []
+    problems: list[str] = []
+    for index, node in enumerate(nodes or []):
+        if not isinstance(node, dict):
+            continue
+        trade_id = mfl_text(node.get("trade_id")) or mfl_text(node.get("id"))
+        offering = mfl_text(node.get("offeringteam")) or mfl_text(node.get("offeringTeam"))
+        offered_to = mfl_text(node.get("offeredto")) or mfl_text(node.get("offeredTo"))
+        gives_raw = node.get("will_give_up")
+        receives_raw = node.get("will_receive")
+        missing = [
+            name
+            for name, value in (
+                ("trade_id", trade_id),
+                ("offeringteam", offering),
+                ("offeredto", offered_to),
+                ("will_give_up", gives_raw),
+                ("will_receive", receives_raw),
+            )
+            if value is None
+        ]
+        if missing:
+            problems.append(
+                f"pending trade #{index} is missing {', '.join(missing)}; not evaluated"
+            )
+            continue
+        offers.append(
+            PendingTrade(
+                trade_id=trade_id,
+                offering_franchise=offering,
+                offered_to=offered_to,
+                gives=_asset_list(mfl_text(gives_raw)),
+                receives=_asset_list(mfl_text(receives_raw)),
+                expires=_epoch(mfl_text(node.get("expires"))),
+                comments=mfl_text(node.get("comments")) or "",
+            )
+        )
+    return offers, problems
+
+
+# ---------------------------------------------------------------------------
+# The submitted lineup
+# ---------------------------------------------------------------------------
+
+def submitted_starters(payload: Any, franchise_id: str) -> list[str]:
+    """Starters marked for ``franchise_id`` in a ``weeklyResults`` payload.
+
+    ``weeklyResults`` covers every matchup in the league, so only the node
+    whose id is this franchise (and which lists players) is read. No such node
+    means an empty list, never another franchise's lineup.
+    """
+
+    def find(node: Any) -> dict | None:
+        if isinstance(node, dict):
+            if mfl_text(node.get("id")) == franchise_id and "player" in node:
+                return node
+            children = node.values()
+        elif isinstance(node, list):
+            children = node
+        else:
+            return None
+        for child in children:
+            found = find(child)
+            if found is not None:
+                return found
+        return None
+
+    def starters(node: Any) -> list[str]:
+        found: list[str] = []
+        if isinstance(node, dict):
+            pid = mfl_text(node.get("id"))
+            if pid and mfl_text(node.get("status")) == "starter":
+                found.append(pid)
+            for value in node.values():
+                found.extend(starters(value))
+        elif isinstance(node, list):
+            for value in node:
+                found.extend(starters(value))
+        return found
+
+    franchise = find(payload)
+    return starters(franchise.get("player")) if franchise is not None else []
 
 
 def poll_league_state(client, repos, *, force: bool = False) -> LeagueStateDiff:

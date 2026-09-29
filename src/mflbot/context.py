@@ -42,6 +42,8 @@ log = logging.getLogger(__name__)
 
 #: How long the current NFL week is trusted before MFL is asked again.
 CURRENT_WEEK_TTL = timedelta(hours=6)
+#: ingest_state key prefix recording what was done about each trade offer.
+OFFER_STATE_PREFIX = "trade_offer:"
 
 
 @dataclass(slots=True)
@@ -72,6 +74,22 @@ class BotContext:
     def close(self) -> None:
         self.client.close()
         self.db.close()
+
+    def decision_hint(self) -> str:
+        """Where to go to decide, per ``approval_channel`` in config.toml.
+
+        Appended to notifications that announce recommendations. Both surfaces
+        enforce the same rules; this only points at the one the user uses.
+        """
+        if self.config.approval_channel == "web":
+            return (
+                "\n\nDecide in the dashboard: each one is listed under "
+                "Recommendations."
+            )
+        return (
+            "\n\nDecide with `bot pending`, then `bot approve <id>` or "
+            "`bot reject <id>`."
+        )
 
     # -- shared lookups ----------------------------------------------------
 
@@ -416,7 +434,7 @@ class BotContext:
         urgent = bool(escalations) or bool(solution.urgent_risks())
         self.notifier.send(
             f"Week {week} lineup: {len(changes) or 'no'} change(s) recommended",
-            recommendation.render(),
+            recommendation.render() + self.decision_hint(),
             urgent=urgent,
         )
         return f"Created lineup recommendation {recommendation.id}"
@@ -460,6 +478,8 @@ class BotContext:
         except Exception as exc:  # noqa: BLE001
             log.info("Could not read the submitted lineup: %s", exc)
             return []
+        from .ingest.league_state import submitted_starters
+
         return submitted_starters(payload, franchise_id)
 
     def run_waiver_analysis(self, week: int | None = None) -> str:
@@ -503,7 +523,7 @@ class BotContext:
             self.store.save(recommendation)
         self.notifier.send(
             f"{len(recommendations)} add/drop idea(s)",
-            "\n\n".join(r.render() for r in recommendations),
+            "\n\n".join(r.render() for r in recommendations) + self.decision_hint(),
         )
         return f"Created {len(recommendations)} add/drop recommendation(s): " + ", ".join(
             r.id for r in recommendations
@@ -560,10 +580,121 @@ class BotContext:
             self.store.save(recommendation)
         self.notifier.send(
             f"{len(recommendations)} trade idea(s)",
-            "\n\n".join(r.render() for r in recommendations),
+            "\n\n".join(r.render() for r in recommendations) + self.decision_hint(),
         )
         return f"Created {len(recommendations)} trade proposal(s): " + ", ".join(
             r.id for r in recommendations
+        )
+
+    def run_offer_analysis(self) -> str:
+        """Evaluate trade offers made *to* you: one response recommendation each.
+
+        Offers are read from ``pendingTrades`` -- an offer awaiting your answer
+        is pending, not a completed transaction, so the transaction log cannot
+        show it. Each offer is evaluated once. It is raised again only if the
+        recommendation made for it expired unanswered while the offer is still
+        open; one judged too close to call ("counter") is reported once.
+        """
+        settings = self.league_settings()
+        if settings is None:
+            return "League settings not synced. Run `bot sync-config` first."
+        franchise_id = self.owner_franchise_id()
+        if franchise_id is None:
+            return "Your own franchise id is not known. Run `bot whoami`."
+        week = self.current_week()
+        if week is None:
+            return "The current NFL week could not be determined."
+
+        from .analysis.trades import (
+            build_response_recommendation,
+            evaluate_offer,
+            position_strengths,
+            starters_per_position,
+        )
+        from .analysis.waivers import value_players
+        from .ingest.league_state import parse_pending_trades
+        from .recommend.models import RecommendationStatus
+
+        offers, problems = parse_pending_trades(
+            self.client.pending_trades(franchise=franchise_id)
+        )
+        for problem in problems:
+            log.warning("Trade offer skipped: %s", problem)
+        incoming = [o for o in offers if o.offered_to == franchise_id]
+
+        def already_handled(trade_id: str) -> bool:
+            seen = self.repos.get_state(OFFER_STATE_PREFIX + trade_id)
+            if seen is None:
+                return False
+            if seen == "counter":
+                return True
+            earlier = self.store.get(seen)
+            return earlier is not None and earlier.status != RecommendationStatus.EXPIRED
+
+        new = [o for o in incoming if not already_handled(o.trade_id)]
+        if not new:
+            return (
+                f"{len(incoming)} offer(s) to you, none new"
+                + (f"; {len(problems)} could not be read" if problems else "")
+            )
+
+        projections = self.projections()
+        remaining = self.remaining_weeks(week)
+        our_strengths = position_strengths(
+            value_players(self.roster_players(franchise_id), projections, week, remaining),
+            starters_per_position(settings),
+        )
+        now = datetime.now(UTC)
+        created, held = [], []
+        for offer in new:
+            receive_ids, give_ids = offer.assets_for(franchise_id)
+            # Anything not in the player database -- a draft pick, or a player
+            # the daily sync has not seen -- is left unvalued rather than guessed.
+            known = self.repos.get_players([*receive_ids, *give_ids])
+
+            def values(ids, known=known):
+                players = [known[i] for i in ids if i in known]
+                return value_players(players, projections, week, remaining)
+
+            assessment = evaluate_offer(
+                offer.trade_id,
+                offer.offering_franchise,
+                values(receive_ids),
+                values(give_ids),
+                our_strengths,
+                self.config.trades,
+                unvalued_assets=[a for a in (*receive_ids, *give_ids) if a not in known],
+            )
+            recommendation = build_response_recommendation(
+                assessment,
+                settings,
+                franchise_id,
+                expires_at=offer.expires if offer.expires and offer.expires > now else None,
+            )
+            if recommendation is None:
+                held.append(assessment)
+                self.repos.set_state(OFFER_STATE_PREFIX + offer.trade_id, "counter")
+                continue
+            self.store.save(recommendation)
+            created.append(recommendation)
+            self.repos.set_state(OFFER_STATE_PREFIX + offer.trade_id, recommendation.id)
+
+        if created:
+            self.notifier.send(
+                f"{len(created)} trade offer(s) to answer",
+                "\n\n".join(r.render() for r in created) + self.decision_hint(),
+            )
+        for assessment in held:
+            self.notifier.send(
+                f"Trade offer {assessment.offer_id} needs your judgement",
+                f"From franchise {assessment.from_franchise_id or 'unknown'}. "
+                f"{assessment.reasoning}\nNo recommendation was made; answer it on "
+                f"MFL if you want to.",
+            )
+        return (
+            f"{len(created)} response recommendation(s) created"
+            + (f": {', '.join(r.id for r in created)}" if created else "")
+            + (f"; {len(held)} offer(s) left to your judgement" if held else "")
         )
 
     # -- execution ---------------------------------------------------------
@@ -584,43 +715,3 @@ class BotContext:
             executor = Executor(write_client, self.client, self.repos, self.store)
             return executor.execute(recommendation, token)
 
-
-def submitted_starters(payload: Any, franchise_id: str) -> list[str]:
-    """Starters marked for ``franchise_id`` in a ``weeklyResults`` payload.
-
-    Finds the node whose id is this franchise and that lists players, then
-    collects the players under it marked ``starter``. No such node means an
-    empty list, never another franchise's lineup.
-    """
-    from .analysis.rules_parser import mfl_text
-
-    def find(node: Any) -> dict | None:
-        if isinstance(node, dict):
-            if mfl_text(node.get("id")) == franchise_id and "player" in node:
-                return node
-            children = node.values()
-        elif isinstance(node, list):
-            children = node
-        else:
-            return None
-        for child in children:
-            found = find(child)
-            if found is not None:
-                return found
-        return None
-
-    def starters(node: Any) -> list[str]:
-        found: list[str] = []
-        if isinstance(node, dict):
-            pid = mfl_text(node.get("id"))
-            if pid and mfl_text(node.get("status")) == "starter":
-                found.append(pid)
-            for value in node.values():
-                found.extend(starters(value))
-        elif isinstance(node, list):
-            for value in node:
-                found.extend(starters(value))
-        return found
-
-    franchise = find(payload)
-    return starters(franchise.get("player")) if franchise is not None else []
