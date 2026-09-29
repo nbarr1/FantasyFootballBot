@@ -8,6 +8,7 @@ record a miss, never invent a value.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -200,3 +201,32 @@ def test_fixed_size_slots_give_an_unambiguous_count() -> None:
     starters = {"position": [{"name": "QB", "limit": "1"}, {"name": "RB", "limit": "2"}]}
     settings, _ = parse_league_settings(_league(starters=starters), "TEST0001", 2026)
     assert settings.starter_count == 3
+
+
+def test_state_paths_resolve_against_the_config_files_directory(tmp_path) -> None:
+    """Running `bot` from another directory must not pick up other state --
+    least of all a different endpoints.lock.json."""
+    from mflbot.config import load_config
+
+    config_dir = tmp_path / "league"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        '[league]\nid = "TEST0001"\nseason = 2026\nhost = "example.invalid"\n'
+    )
+    config = load_config(config_dir / "config.toml")
+    assert config.base_dir == config_dir.resolve()
+    assert config.resolve("endpoints.lock.json") == config_dir.resolve() / "endpoints.lock.json"
+    assert config.resolve("/abs/path.db") == Path("/abs/path.db")
+
+
+def test_an_unknown_approval_channel_is_refused(tmp_path) -> None:
+    from mflbot.config import load_config
+    from mflbot.errors import ConfigError
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        'approval_channel = "carrier-pigeon"\n'
+        '[league]\nid = "TEST0001"\nseason = 2026\nhost = "example.invalid"\n'
+    )
+    with pytest.raises(ConfigError, match="approval_channel"):
+        load_config(path)

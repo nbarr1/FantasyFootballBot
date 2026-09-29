@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,9 @@ WRITE_MODULE = "mflbot.mfl.write_client"
 
 def _imported_modules(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    package_parts = path.relative_to(PACKAGE_ROOT).parts[:-1]
+    parts = path.relative_to(PACKAGE_ROOT).parts
+    # A package's __init__ resolves relative imports against the package itself.
+    package_parts = parts[:-1]
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -44,7 +47,20 @@ def _imported_modules(path: Path) -> set[str]:
             else:
                 module = node.module or ""
             modules.add(module)
+            # `from ..mfl import write_client` imports a *module* by name. Each
+            # imported name is recorded as a possible submodule; one that turns
+            # out to be a class or function simply has no file to follow.
+            modules.update(f"{module}.{alias.name}" for alias in node.names)
     return modules
+
+
+def _module_file(module: str) -> Path | None:
+    """The source file for an mflbot module or package, if there is one."""
+    stem = PACKAGE_ROOT.parent / module.replace(".", "/")
+    for candidate in (stem.with_suffix(".py"), stem / "__init__.py"):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _reachable_from(start: Path, seen: set[str] | None = None) -> set[str]:
@@ -54,8 +70,8 @@ def _reachable_from(start: Path, seen: set[str] | None = None) -> set[str]:
         if not module.startswith("mflbot") or module in seen:
             continue
         seen.add(module)
-        candidate = PACKAGE_ROOT.parent / (module.replace(".", "/") + ".py")
-        if candidate.exists():
+        candidate = _module_file(module)
+        if candidate is not None:
             _reachable_from(candidate, seen)
     return seen
 
@@ -71,6 +87,34 @@ def test_analysis_and_ingest_cannot_reach_the_write_client(package: str) -> None
         f"these {package} modules can reach the write client: {offenders}. "
         f"Analysis must not be able to submit to MFL."
     )
+
+
+@pytest.mark.parametrize("package", ["analysis", "ingest"])
+def test_analysis_and_ingest_do_not_name_the_write_client(package: str) -> None:
+    """The import walk cannot see a dynamic import -- importlib.import_module
+    or __import__ with the module name as a string -- so the name itself is
+    not allowed to appear in these packages at all."""
+    offenders = [
+        str(path.relative_to(PACKAGE_ROOT))
+        for path in (PACKAGE_ROOT / package).rglob("*.py")
+        if "write_client" in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"these {package} modules name the write client: {offenders}"
+
+
+def test_the_import_walk_sees_a_module_imported_by_name(tmp_path, monkeypatch) -> None:
+    """`from ..mfl import write_client` must count as reaching the module."""
+    root = tmp_path / "src" / "mflbot"
+    (root / "analysis").mkdir(parents=True)
+    (root / "mfl").mkdir()
+    for init in (root, root / "analysis", root / "mfl"):
+        (init / "__init__.py").write_text("")
+    (root / "mfl" / "write_client.py").write_text("")
+    sneaky = root / "analysis" / "sneaky.py"
+    sneaky.write_text("from ..mfl import write_client\n")
+    monkeypatch.setattr(sys.modules[__name__], "PACKAGE_ROOT", root)
+
+    assert WRITE_MODULE in _reachable_from(sneaky)
 
 
 def test_read_client_has_no_write_methods() -> None:

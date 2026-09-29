@@ -183,7 +183,7 @@ class WebSecurity:
             ok = (
                 verify_password(secret, self.password_hash)
                 if self.password_hash
-                else hmac.compare_digest(secret or "", self.access_token or "")
+                else _same(secret or "", self.access_token or "")
             )
             if not ok:
                 self._failures.append(now)
@@ -239,7 +239,16 @@ class WebSecurity:
     # -- CSRF --------------------------------------------------------------
 
     def check_csrf(self, session: Session, submitted: str | None) -> bool:
-        return bool(submitted) and hmac.compare_digest(session.csrf_token, submitted)
+        return bool(submitted) and _same(session.csrf_token, submitted)
+
+
+def _same(a: str, b: str) -> bool:
+    """Constant-time equality for secrets typed or pasted by a person.
+
+    Compared as bytes: ``hmac.compare_digest`` raises on a non-ASCII *str*,
+    which turned a mistyped token into a server error instead of a refusal.
+    """
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
 def origin_is_allowed(origin: str | None, host_header: str | None) -> bool:

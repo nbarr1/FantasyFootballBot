@@ -60,13 +60,18 @@ class BotContext:
 
     @classmethod
     def build(cls, config: Config) -> BotContext:
-        db = Database.from_settings(config.storage)
+        from .approval.token import DEFAULT_SECRET_PATH
+        from .mfl.endpoints import LOCK_FILENAME
+
+        db = Database.from_settings(config.storage, base_dir=config.base_dir)
         db.migrate()
         repos = Repositories(db)
         store = RecommendationStore(db)
-        tokens = TokenService.create(db)
-        registry = EndpointRegistry.load()
-        client = MFLReadClient(config.league, registry=registry)
+        tokens = TokenService.create(db, config.resolve(DEFAULT_SECRET_PATH))
+        registry = EndpointRegistry.load(config.resolve(LOCK_FILENAME))
+        client = MFLReadClient(
+            config.league, registry=registry, cache_dir=config.resolve(".cache/mfl")
+        )
         notifier = build_notifier(config.notify)
         channel = CLIApprovalChannel(store, tokens, notifier)
         return cls(config, db, repos, store, tokens, client, registry, notifier, channel)

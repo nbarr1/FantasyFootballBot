@@ -78,7 +78,9 @@ def cmd_verify_endpoints(args, context: BotContext) -> int:
     """Reconcile the endpoint registry against MFL's live API documentation."""
     from .mfl.verify import verify_endpoints
 
-    report = verify_endpoints(context.client, context.registry)
+    report = verify_endpoints(
+        context.client, context.registry, lock_path=context.registry.lock_path
+    )
     print(report.render())
     return 0 if report.all_writes_resolved else 2
 
@@ -653,7 +655,11 @@ def cmd_serve(args, context: BotContext) -> int:
             file=sys.stderr,
         )
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # log_config=None: uvicorn's loggers then propagate to the handlers
+    # setup_logging installed, whose formatter redacts. Its own default config
+    # would print every request line verbatim -- including the access-token
+    # login link above, each time it is used.
+    uvicorn.run(app, host=host, port=port, log_level="info", log_config=None)
     return 0
 
 

@@ -52,7 +52,10 @@ class WebhookNotifier(Notifier):
         try:
             response = self._http.post(self.url, json={"content": content})
         except Exception as exc:  # noqa: BLE001 - a failed ping must not stop analysis
-            log.warning("Webhook delivery failed: %s", exc)
+            # The exception type only: an httpx error message can embed the
+            # request URL, and a webhook URL carries its token in the path,
+            # where the redactor cannot see it.
+            log.warning("Webhook delivery failed: %s", type(exc).__name__)
             return False
         if response.status_code >= 300:
             log.warning("Webhook returned HTTP %s", response.status_code)

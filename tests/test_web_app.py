@@ -621,3 +621,48 @@ def test_the_state_api_reports_what_is_blocked(signed_in, context) -> None:
     assert payload["status"]["pending_count"] == 1
     assert payload["status"]["writes_total"] > 0
     assert "counts" in payload["status"]
+
+
+# ---------------------------------------------------------------------------
+# the access token stays out of logs; odd input is refused, not a crash
+# ---------------------------------------------------------------------------
+
+def test_the_access_token_is_redacted_from_request_logs() -> None:
+    from mflbot.mfl.auth import redact
+
+    line = '127.0.0.1:5000 - "GET /login?token=abcDEF123_-xyz&next=/ HTTP/1.1" 303'
+    assert "abcDEF123" not in redact(line)
+    assert "next=/" in redact(line)
+
+
+def test_serve_routes_uvicorn_logs_through_the_redacting_formatter(
+    context, monkeypatch
+) -> None:
+    import argparse
+
+    import uvicorn
+
+    from mflbot.cli import cmd_serve
+
+    captured = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(kw))
+    monkeypatch.delenv("MFLBOT_WEB_PASSWORD", raising=False)
+    args = argparse.Namespace(
+        host="127.0.0.1", port=8765, no_submit=False, no_jobs=False, with_scheduler=False
+    )
+    assert cmd_serve(args, context) == 0
+    assert "log_config" in captured and captured["log_config"] is None
+
+
+def test_a_non_ascii_access_token_is_refused_not_a_server_error(context) -> None:
+    with TestClient(build_app(context, WebSecurity.create(None))) as client:
+        response = client.get("/login", params={"token": "é"})
+    assert response.status_code == 401
+
+
+def test_a_non_ascii_csrf_token_is_refused_not_a_server_error(signed_in, context) -> None:
+    recommendation = only_recommendation(context)
+    response = signed_in.post(
+        f"/recommendations/{recommendation.id}/approve", data={"csrf_token": "é"}
+    )
+    assert response.status_code == 403
