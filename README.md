@@ -200,8 +200,14 @@ localhost port. So:
   nothing else. Signing out, or restarting the server, really does end them.
 - **Every mutating request needs a CSRF token**, plus an Origin check when the
   browser sends one.
-- **Failed logins are throttled**, and a non-loopback bind without a password is
-  refused outright.
+- **Failed logins are throttled per connecting address**: after 10 failures in
+  15 minutes, that address is refused until the window passes, and every other
+  address can still sign in. IPv6 addresses count per /64. The address is the
+  TCP connection's, never `X-Forwarded-For`, which a guesser could change on
+  every attempt. So through an SSH tunnel, a reverse proxy on the same host, or
+  Docker's published port, every login arrives from one address and shares one
+  throttle.
+- **A non-loopback bind without a password is refused outright.**
 
 It speaks plain HTTP by design. Reach it over an SSH tunnel
 (`ssh -N -L 8765:127.0.0.1:8765 you@host`) or put a TLS-terminating proxy in
@@ -489,7 +495,7 @@ directly.
 ## Tests
 
 ```bash
-pytest              # 296 tests
+pytest              # 309 tests
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`

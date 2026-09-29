@@ -659,7 +659,13 @@ def cmd_serve(args, context: BotContext) -> int:
     # setup_logging installed, whose formatter redacts. Its own default config
     # would print every request line verbatim -- including the access-token
     # login link above, each time it is used.
-    uvicorn.run(app, host=host, port=port, log_level="info", log_config=None)
+    # proxy_headers=False: failed logins are throttled per connecting address,
+    # and with proxy headers on, uvicorn replaces that address with whatever
+    # X-Forwarded-For a local client sends -- a fresh one for every guess.
+    uvicorn.run(
+        app, host=host, port=port, log_level="info", log_config=None,
+        proxy_headers=False,
+    )
     return 0
 
 

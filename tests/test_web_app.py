@@ -55,7 +55,7 @@ from mflbot.web.jobs import (
     RUNNABLE_COMMANDS,
     JobManager,
 )
-from mflbot.web.security import SESSION_COOKIE, WebSecurity
+from mflbot.web.security import SESSION_COOKIE, WebAuthError, WebSecurity, client_key
 
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
@@ -652,6 +652,9 @@ def test_serve_routes_uvicorn_logs_through_the_redacting_formatter(
     )
     assert cmd_serve(args, context) == 0
     assert "log_config" in captured and captured["log_config"] is None
+    # The login throttle keys on the TCP peer; with proxy headers on, uvicorn
+    # would replace it with any X-Forwarded-For a local client chose to send.
+    assert captured.get("proxy_headers") is False
 
 
 def test_a_non_ascii_access_token_is_refused_not_a_server_error(context) -> None:
@@ -711,3 +714,105 @@ def test_a_jobs_console_shows_only_that_jobs_output(context) -> None:
     assert "JOB-PRINT" in output
     assert "NEIGHBOUR-LOG" not in output
     assert "NEIGHBOUR-PRINT" not in output
+
+
+# ---------------------------------------------------------------------------
+# the login throttle is per connecting address
+# ---------------------------------------------------------------------------
+
+def test_one_address_guessing_wrong_does_not_lock_out_another() -> None:
+    security = WebSecurity.create(PASSWORD)
+    for _ in range(security.max_failures):
+        with pytest.raises(WebAuthError):
+            security.login("wrong", client="203.0.113.5")
+
+    with pytest.raises(WebAuthError, match="Too many failed attempts"):
+        security.login(PASSWORD, client="203.0.113.5")
+    assert security.login(PASSWORD, client="198.51.100.7") is not None
+
+
+def test_signing_in_clears_only_your_own_failures() -> None:
+    security = WebSecurity.create(PASSWORD)
+    for client in ("203.0.113.5", "198.51.100.7"):
+        for _ in range(security.max_failures - 1):
+            with pytest.raises(WebAuthError):
+                security.login("wrong", client=client)
+
+    security.login(PASSWORD, client="198.51.100.7")
+
+    with pytest.raises(WebAuthError):
+        security.login("wrong", client="203.0.113.5")
+    with pytest.raises(WebAuthError, match="Too many failed attempts"):
+        security.login(PASSWORD, client="203.0.113.5")
+
+
+def test_failures_age_out_of_the_table() -> None:
+    security = WebSecurity.create(PASSWORD)
+    with pytest.raises(WebAuthError):
+        security.login("wrong", client="203.0.113.5")
+    stale = datetime.now(UTC) - security.failure_window - timedelta(seconds=1)
+    security._failures["203.0.113.5"] = [stale]
+
+    security.login(PASSWORD, client="198.51.100.7")
+    assert "203.0.113.5" not in security._failures
+
+
+@pytest.mark.parametrize(
+    ("host", "key"),
+    [
+        ("203.0.113.5", "203.0.113.5"),
+        ("2001:db8:1:2:aaaa::1", "2001:db8:1:2::/64"),
+        ("2001:db8:1:2:bbbb::9", "2001:db8:1:2::/64"),
+        ("::ffff:203.0.113.5", "203.0.113.5"),
+        (None, "unknown"),
+        ("testclient", "testclient"),
+    ],
+)
+def test_client_keys(host, key) -> None:
+    assert client_key(host) == key
+
+
+def test_a_forwarded_for_header_cannot_dodge_the_throttle(client) -> None:
+    """A guesser that claims a new address on every attempt is still one
+    connection, and is throttled as one."""
+    for attempt in range(10):
+        client.post(
+            "/login",
+            data={"secret": "wrong"},
+            headers={"X-Forwarded-For": f"198.51.100.{attempt}"},
+        )
+    refused = client.post(
+        "/login", data={"secret": PASSWORD}, headers={"X-Forwarded-For": "192.0.2.1"}
+    )
+    assert refused.status_code == 401
+    assert "Too many failed attempts" in refused.text
+
+
+def test_a_locked_out_address_leaves_other_addresses_able_to_sign_in(context) -> None:
+    app = build_app(context, WebSecurity.create(PASSWORD))
+    try:
+        guesser = TestClient(app, client=("203.0.113.5", 50000))
+        owner = TestClient(app, client=("198.51.100.7", 50000))
+    except TypeError:  # pragma: no cover - older Starlette without `client=`
+        pytest.skip("this Starlette's TestClient cannot set a client address")
+    with guesser, owner:
+        for _ in range(10):
+            guesser.post("/login", data={"secret": "wrong"})
+        assert guesser.post("/login", data={"secret": PASSWORD}).status_code == 401
+        signed_in = owner.post("/login", data={"secret": PASSWORD}, follow_redirects=False)
+        assert signed_in.status_code == 303
+
+
+def test_the_session_cookie_is_secure_behind_a_tls_proxy(client) -> None:
+    response = client.post(
+        "/login",
+        data={"secret": PASSWORD},
+        headers={"X-Forwarded-Proto": "https"},
+        follow_redirects=False,
+    )
+    assert "secure" in response.headers["set-cookie"].lower()
+
+
+def test_the_session_cookie_is_not_secure_over_plain_http(client) -> None:
+    response = client.post("/login", data={"secret": PASSWORD}, follow_redirects=False)
+    assert "secure" not in response.headers["set-cookie"].lower()

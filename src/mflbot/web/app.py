@@ -52,6 +52,7 @@ from .security import (
     Session,
     WebAuthError,
     WebSecurity,
+    client_key,
     origin_is_allowed,
 )
 
@@ -215,6 +216,15 @@ def build_app(
         """Where to send the browser after a form post."""
         return safe_path(request.query_params.get("next"), default)
 
+    def client_of(request: Request) -> str:
+        """The throttling key for this request's connection -- its TCP peer.
+
+        ``bot serve`` turns uvicorn's proxy-header handling off, so this is the
+        address that actually connected, not an X-Forwarded-For value a
+        guesser could vary on every attempt.
+        """
+        return client_key(request.client.host if request.client else None)
+
     def wants_json(request: Request) -> bool:
         return request.url.path.startswith("/api/") or "application/json" in (
             request.headers.get("accept") or ""
@@ -264,7 +274,7 @@ def build_app(
             # a session cookie means the token stops travelling with every
             # subsequent request, and the address bar keeps no copy of it.
             try:
-                session = security.login(token)
+                session = security.login(token, client=client_of(request))
             except WebAuthError as exc:
                 return templates.TemplateResponse(
                     request=request,
@@ -292,7 +302,7 @@ def build_app(
         ):
             raise HTTPException(status_code=403, detail="cross-site login refused")
         try:
-            session = security.login(secret)
+            session = security.login(secret, client=client_of(request))
         except WebAuthError as exc:
             return templates.TemplateResponse(
                 request=request,
@@ -320,10 +330,14 @@ def build_app(
             session.id,
             httponly=True,
             samesite="lax",
-            # Only mark Secure when the connection actually is TLS: a Secure
+            # Only mark Secure when the browser's connection is TLS: a Secure
             # cookie over plain http://127.0.0.1 is silently dropped, which
-            # would present as "login does nothing".
-            secure=request.url.scheme == "https",
+            # would present as "login does nothing". Behind a TLS-terminating
+            # proxy that is known only from X-Forwarded-Proto (uvicorn's proxy
+            # handling is off). Trusting it from anyone is safe here: it can
+            # only make the sender's own cookie stricter.
+            secure=request.url.scheme == "https"
+            or request.headers.get("x-forwarded-proto", "").lower() == "https",
             path="/",
             max_age=int(security.session_ttl.total_seconds()),
         )

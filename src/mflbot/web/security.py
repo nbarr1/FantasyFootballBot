@@ -21,12 +21,17 @@ Three mechanisms, all deliberately boring:
   Without this, any page you visit while logged in could POST an approval.
 
 Failed logins are throttled, because a local password that can be guessed at
-machine speed is not a password.
+machine speed is not a password. The throttle is kept per connecting address
+(see :func:`client_key`), so one address guessing wrong cannot lock everyone
+else out. The address is the TCP peer, never a forwarded header: ``bot serve``
+runs uvicorn with proxy headers off, because a header is whatever the client
+chose to send, and a guesser could claim a new address on every attempt.
 """
 
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import logging
 import secrets
 import threading
@@ -118,10 +123,12 @@ class WebSecurity:
     access_token: str | None = None
     session_ttl: timedelta = timedelta(hours=12)
     idle_timeout: timedelta = timedelta(hours=2)
+    #: Failed attempts allowed per client address within ``failure_window``.
     max_failures: int = 10
     failure_window: timedelta = timedelta(minutes=15)
     _sessions: dict[str, Session] = field(default_factory=dict)
-    _failures: list[datetime] = field(default_factory=list)
+    #: client key (see :func:`client_key`) -> recent failure times.
+    _failures: dict[str, list[datetime]] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
@@ -163,21 +170,32 @@ class WebSecurity:
             return f"{base}login?token={self.access_token}"
         return base
 
-    def _throttled(self, now: datetime) -> timedelta | None:
-        self._failures = [f for f in self._failures if now - f < self.failure_window]
-        if len(self._failures) < self.max_failures:
+    def _throttled(self, client: str, now: datetime) -> timedelta | None:
+        # Forget failures that have aged out, for every client, so the table
+        # holds only addresses seen within the window.
+        for key in list(self._failures):
+            recent = [f for f in self._failures[key] if now - f < self.failure_window]
+            if recent:
+                self._failures[key] = recent
+            else:
+                del self._failures[key]
+        failures = self._failures.get(client, [])
+        if len(failures) < self.max_failures:
             return None
-        oldest = min(self._failures)
-        return self.failure_window - (now - oldest)
+        return self.failure_window - (now - min(failures))
 
-    def login(self, secret: str, *, actor: str = "web") -> Session:
-        """Exchange the shared secret for a session. Raises on refusal."""
+    def login(self, secret: str, *, actor: str = "web", client: str = "") -> Session:
+        """Exchange the shared secret for a session. Raises on refusal.
+
+        ``client`` is the caller's :func:`client_key`. Failures are counted per
+        client, so a throttled address does not lock out any other.
+        """
         now = datetime.now(UTC)
         with self._lock:
-            wait = self._throttled(now)
+            wait = self._throttled(client, now)
             if wait is not None:
                 raise WebAuthError(
-                    f"Too many failed attempts. Try again in "
+                    f"Too many failed attempts from your address. Try again in "
                     f"{int(wait.total_seconds()) // 60 + 1} minute(s)."
                 )
             ok = (
@@ -186,11 +204,12 @@ class WebSecurity:
                 else _same(secret or "", self.access_token or "")
             )
             if not ok:
-                self._failures.append(now)
-                log.warning("dashboard login refused (%s auth)", self.mode)
+                self._failures.setdefault(client, []).append(now)
+                log.warning("dashboard login refused (%s auth) from %s", self.mode,
+                            client or "an unknown address")
                 raise WebAuthError("That is not the right password." if self.password_hash
                                    else "That access token is not valid.")
-            self._failures.clear()
+            self._failures.pop(client, None)
             session = Session(
                 id=secrets.token_urlsafe(32),
                 csrf_token=secrets.token_urlsafe(32),
@@ -249,6 +268,27 @@ def _same(a: str, b: str) -> bool:
     which turned a mistyped token into a server error instead of a refusal.
     """
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def client_key(host: str | None) -> str:
+    """The identity a connecting address is throttled under.
+
+    An IPv4 address is its own key. An IPv6 address is keyed by its /64,
+    because a single host is routinely handed a whole /64 and could otherwise
+    rotate through it to dodge the throttle. An IPv4-mapped IPv6 address counts
+    as the IPv4 address it maps.
+    """
+    if not host:
+        return "unknown"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
 
 
 def origin_is_allowed(origin: str | None, host_header: str | None) -> bool:
