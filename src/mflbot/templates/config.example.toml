@@ -131,11 +131,11 @@ allow_jobs = true
 # authentication for it. The bot token is a secret: set MFLBOT_DISCORD_TOKEN
 # in the environment, never here. See "Discord" in the README for setup.
 [discord]
-enabled = false
+enabled = true
 # Your Discord user id (Settings > Advanced > Developer Mode, then right-click
 # your name > Copy User ID). The bot DMs this account, and only this account
 # can use its buttons and commands. Required when enabled.
-owner_user_id = ""
+owner_user_id = "939266999287177306"
 # false: Discord can approve, reject and edit, and submitting stays with the
 # dashboard or `bot execute`.
 allow_submissions = true
