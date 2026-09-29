@@ -119,7 +119,9 @@ class NewsSettings:
 
 @dataclass(frozen=True, slots=True)
 class NotifySettings:
-    #: Transport id: "webhook" (works with Discord), "email", "telegram".
+    #: Transport id: "webhook" (works with a Discord channel webhook),
+    #: "discord" (DMs from the Discord bot; needs [discord] enabled), "email",
+    #: "telegram".
     transport: str = "webhook"
     #: Webhook URL is a secret and is read from MFLBOT_WEBHOOK_URL, not here.
     enabled: bool = True
@@ -140,6 +142,24 @@ class WebSettings:
     #: When false, the ingestion/analysis buttons are removed and the dashboard
     #: is a viewer over whatever the scheduler produced.
     allow_jobs: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class DiscordSettings:
+    """The Discord bot (``bot run`` / ``bot serve``). Behaviour only -- the bot
+    token is a secret and comes from ``MFLBOT_DISCORD_TOKEN``, never from this
+    file."""
+
+    enabled: bool = False
+    #: Your Discord user id (Discord: Settings > Advanced > Developer Mode, then
+    #: right-click your name > Copy User ID). The bot DMs this account, and only
+    #: this account can approve, reject, edit or submit.
+    owner_user_id: str = ""
+    #: When false, Discord can approve, reject and edit, but submitting stays
+    #: with the dashboard or `bot execute`.
+    allow_submissions: bool = True
+    #: How often the bot posts new recommendations and updates decided ones.
+    publish_seconds: int = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,8 +192,9 @@ class Config:
     notify: NotifySettings = field(default_factory=NotifySettings)
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
     web: WebSettings = field(default_factory=WebSettings)
-    #: Approval channel id: "cli" or "web". Both enforce the same rules; this
-    #: only selects which one the scheduler's notifications point at.
+    discord: DiscordSettings = field(default_factory=DiscordSettings)
+    #: Approval channel id: "cli", "web" or "discord". All enforce the same
+    #: rules; this only selects which one the scheduler's notifications point at.
     approval_channel: str = "cli"
     #: The directory holding config.toml. Relative paths the bot keeps state
     #: in -- the database, endpoints.lock.json, the approval signing key, the
@@ -230,7 +251,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
             raise ConfigError(f"[league] is missing required key '{required}'")
     league = _build(LeagueRef, league_raw, "league")
 
-    return Config(
+    config = Config(
         league=league,
         storage=_build(StorageSettings, _section(raw, "storage"), "storage"),
         waivers=_build(WaiverSettings, _section(raw, "waivers"), "waivers"),
@@ -240,12 +261,58 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         notify=_build(NotifySettings, _section(raw, "notify"), "notify"),
         schedule=_build(ScheduleSettings, _section(raw, "schedule"), "schedule"),
         web=_build(WebSettings, _section(raw, "web"), "web"),
+        discord=_discord(_section(raw, "discord")),
         approval_channel=_approval_channel(raw.get("approval_channel", "cli")),
         base_dir=path.resolve().parent,
     )
+    _check_discord_references(config)
+    return config
 
 
 def _approval_channel(value: Any) -> str:
-    if value not in ("cli", "web"):
-        raise ConfigError(f"approval_channel must be \"cli\" or \"web\", not {value!r}")
+    if value not in ("cli", "web", "discord"):
+        raise ConfigError(
+            f"approval_channel must be \"cli\", \"web\" or \"discord\", not {value!r}"
+        )
     return value
+
+
+def _discord(data: dict[str, Any]) -> DiscordSettings:
+    # A Discord id is a large integer, and TOML reads a bare one as a number.
+    if isinstance(data.get("owner_user_id"), int):
+        data = {**data, "owner_user_id": str(data["owner_user_id"])}
+    settings = _build(DiscordSettings, data, "discord")
+    owner = settings.owner_user_id.strip()
+    if settings.enabled and not owner:
+        raise ConfigError(
+            "[discord] is enabled but owner_user_id is not set. There is no mode in "
+            "which anyone who can see the bot's messages can approve MFL writes."
+        )
+    if owner and not owner.isdigit():
+        raise ConfigError(
+            f"[discord] owner_user_id must be a Discord user id (digits only), not "
+            f"{settings.owner_user_id!r}"
+        )
+    if settings.publish_seconds < 5:
+        raise ConfigError(
+            f"[discord] publish_seconds must be at least 5, not {settings.publish_seconds!r}"
+        )
+    return settings
+
+
+def _check_discord_references(config: Config) -> None:
+    """Refuse settings that point at a Discord bot that will never run: every
+    notification would be logged instead of sent, and the approval hint would
+    send you to buttons that were never posted."""
+    if config.discord.enabled:
+        return
+    if config.notify.enabled and config.notify.transport == "discord":
+        raise ConfigError(
+            '[notify] transport is "discord" but [discord] is not enabled. Enable '
+            "[discord], or choose another transport."
+        )
+    if config.approval_channel == "discord":
+        raise ConfigError(
+            'approval_channel is "discord" but [discord] is not enabled. Enable '
+            '[discord], or set approval_channel to "cli" or "web".'
+        )

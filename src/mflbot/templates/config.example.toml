@@ -8,8 +8,9 @@
 #
 # Secrets are never read from this file. See .env.example.
 
-# Approval surface: "cli" or "web" (`bot serve`). Both enforce identical rules;
-# this only selects which one notifications point you at.
+# Approval surface: "cli", "web" (`bot serve`) or "discord" (needs [discord]
+# enabled). All enforce identical rules; this only selects which one
+# notifications point you at.
 # Must stay above the first [table]: in TOML a bare key after a table header
 # belongs to that table, not to the top level.
 approval_channel = "cli"
@@ -77,8 +78,9 @@ poll_minutes = 45
 
 
 [notify]
-# Transport: "webhook" (works with Discord), "email" or "telegram" (both stubs).
-# The webhook URL is a secret: set MFLBOT_WEBHOOK_URL, not a value here.
+# Transport: "webhook" (works with a Discord channel webhook), "discord" (DMs
+# from the Discord bot; needs [discord] enabled), "email" or "telegram" (both
+# stubs). The webhook URL is a secret: set MFLBOT_WEBHOOK_URL, not a value here.
 transport = "webhook"
 enabled = true
 
@@ -118,3 +120,25 @@ allow_submissions = true
 # false: removes the ingestion/analysis buttons, leaving a read-only viewer
 # over whatever the scheduler produced.
 allow_jobs = true
+
+
+# The Discord bot: DMs you a card for each recommendation, with Approve,
+# Submit, Reject and Edit buttons. It runs inside `bot run` and `bot serve`,
+# connects out to Discord (no inbound port), and needs the discord extra:
+# pip install 'mflbot[discord]'.
+#
+# Your Discord account becomes an approval credential, so turn on two-factor
+# authentication for it. The bot token is a secret: set MFLBOT_DISCORD_TOKEN
+# in the environment, never here. See "Discord" in the README for setup.
+[discord]
+enabled = false
+# Your Discord user id (Settings > Advanced > Developer Mode, then right-click
+# your name > Copy User ID). The bot DMs this account, and only this account
+# can use its buttons and commands. Required when enabled.
+owner_user_id = ""
+# false: Discord can approve, reject and edit, and submitting stays with the
+# dashboard or `bot execute`.
+allow_submissions = true
+# How often, in seconds, the bot posts new recommendations and redraws decided
+# ones. At least 5.
+publish_seconds = 30

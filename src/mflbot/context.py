@@ -23,7 +23,7 @@ from .approval.cli_channel import CLIApprovalChannel
 from .approval.token import TokenService
 from .config import Config
 from .domain.models import LeagueSettings, Player
-from .errors import BlockedFeature, Missing
+from .errors import ApprovalError, BlockedFeature, Missing
 from .mfl.client import MFLReadClient
 from .mfl.endpoints import Capability, EndpointRegistry
 from .notify.registry import build_notifier
@@ -91,9 +91,32 @@ class BotContext:
                 "\n\nDecide in the dashboard: each one is listed under "
                 "Recommendations."
             )
+        if self.config.approval_channel == "discord":
+            return "\n\nDecide with the buttons on the bot's message for each one."
         return (
             "\n\nDecide with `bot pending`, then `bot approve <id>` or "
             "`bot reject <id>`."
+        )
+
+    def _announce(self, subject: str, recommendations, *, urgent: bool = False) -> None:
+        """Tell the user new recommendations are waiting.
+
+        A transport that shows each recommendation itself -- the Discord bot
+        posts one card per recommendation -- gets no copy of their text: the
+        card is the notification. Only an urgent announcement is sent there,
+        so it stands out from the cards.
+        """
+        if getattr(self.notifier, "shows_recommendations", False):
+            if urgent:
+                self.notifier.send(
+                    subject, "The card for it has the detail." + self.decision_hint(),
+                    urgent=True,
+                )
+            return
+        self.notifier.send(
+            subject,
+            "\n\n".join(r.render() for r in recommendations) + self.decision_hint(),
+            urgent=urgent,
         )
 
     # -- shared lookups ----------------------------------------------------
@@ -462,9 +485,9 @@ class BotContext:
         self.store.save(recommendation)
 
         urgent = bool(escalations) or bool(solution.urgent_risks())
-        self.notifier.send(
+        self._announce(
             f"Week {week} lineup: {len(changes) or 'no'} change(s) recommended",
-            recommendation.render() + self.decision_hint(),
+            [recommendation],
             urgent=urgent,
         )
         return f"Created lineup recommendation {recommendation.id}"
@@ -550,10 +573,7 @@ class BotContext:
         recommendations = build_recommendations(ideas, settings, franchise_id)
         for recommendation in recommendations:
             self.store.save(recommendation)
-        self.notifier.send(
-            f"{len(recommendations)} add/drop idea(s)",
-            "\n\n".join(r.render() for r in recommendations) + self.decision_hint(),
-        )
+        self._announce(f"{len(recommendations)} add/drop idea(s)", recommendations)
         return f"Created {len(recommendations)} add/drop recommendation(s): " + ", ".join(
             r.id for r in recommendations
         )
@@ -606,10 +626,7 @@ class BotContext:
         recommendations = build_proposal_recommendations(ideas, settings, franchise_id)
         for recommendation in recommendations:
             self.store.save(recommendation)
-        self.notifier.send(
-            f"{len(recommendations)} trade idea(s)",
-            "\n\n".join(r.render() for r in recommendations) + self.decision_hint(),
-        )
+        self._announce(f"{len(recommendations)} trade idea(s)", recommendations)
         return f"Created {len(recommendations)} trade proposal(s): " + ", ".join(
             r.id for r in recommendations
         )
@@ -708,10 +725,7 @@ class BotContext:
             self.repos.set_state(OFFER_STATE_PREFIX + offer.trade_id, recommendation.id)
 
         if created:
-            self.notifier.send(
-                f"{len(created)} trade offer(s) to answer",
-                "\n\n".join(r.render() for r in created) + self.decision_hint(),
-            )
+            self._announce(f"{len(created)} trade offer(s) to answer", created)
         for assessment in held:
             self.notifier.send(
                 f"Trade offer {assessment.offer_id} needs your judgement",
@@ -726,6 +740,26 @@ class BotContext:
         )
 
     # -- execution ---------------------------------------------------------
+
+    def submit_approved(self, recommendation_id: str, token=None) -> Any:
+        """Submit an approved recommendation, spending its live approval.
+
+        The one path from an interactive surface -- the dashboard, Discord --
+        to an MFL write, so the surfaces cannot drift apart. ``token`` is an
+        approval the caller has just minted; without one, the live approval on
+        record is used. Raises :class:`ApprovalError` when there is none. The
+        executor still re-checks everything before sending.
+        """
+        recommendation = self.store.get(recommendation_id)
+        if recommendation is None:
+            raise ApprovalError(f"No recommendation with id {recommendation_id!r}.")
+        token = token or self.tokens.latest_for(recommendation_id)
+        if token is None:
+            raise ApprovalError(
+                "There is no live approval for this action. Approve it first; an "
+                "approval is what authorises a submission."
+            )
+        return self.execute_approved(recommendation, token)
 
     def execute_approved(self, recommendation: Recommendation, token) -> Any:
         """Build the write client and execute. The only path to an MFL write."""

@@ -39,3 +39,6 @@ def setup_logging(verbose: bool = False, log_file: str | None = None) -> None:
     # httpx logs full request URLs at INFO, which would defeat the point.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # discord.py logs every request URL at DEBUG, and the URL of a reply to a
+    # button press carries that interaction's token in its path.
+    logging.getLogger("discord").setLevel(logging.INFO)

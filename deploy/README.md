@@ -11,7 +11,8 @@ Each one comes in two shapes:
   and read the audit trail from a browser.
 
 Run one or the other, not both -- two processes writing to one SQLite file
-contend for its write lock.
+contend for its write lock. Either shape can also run the Discord bot, in the
+same process; see "Discord" later in this file.
 
 Either way, one thing does not change: **nothing is submitted to MFL without a
 per-action approval.** The scheduler polls, analyses, stores recommendations and
@@ -102,6 +103,50 @@ the published port.
 
 `deploy/state/` holds the database, response cache and pending recommendations.
 Back it up; losing it loses your audit trail.
+
+## Discord
+
+The Discord bot runs inside whichever process you chose, when
+`[discord] enabled = true` in `config.toml` and `MFLBOT_DISCORD_TOKEN` is set.
+It connects out to Discord, so it needs outbound HTTPS and no inbound port:
+nothing to publish, forward or put a proxy in front of. The systemd units'
+hardening already allows that.
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications),
+   create an application and add a bot. Copy its token into the secrets file:
+
+   ```bash
+   sudo "$EDITOR" /etc/mflbot/secrets.env    # MFLBOT_DISCORD_TOKEN=...
+   ```
+
+   For Docker, add the same line to `deploy/.env`. The compose file passes it
+   through.
+2. Invite the bot to a server you're in, with the `bot` and
+   `applications.commands` scopes. A private server with only you in it is
+   fine. A bot can only DM someone it shares a server with.
+3. Turn on Developer Mode in Discord (Settings > Advanced), right-click your
+   name, and choose **Copy User ID**. Set it in `config.toml`:
+
+   ```toml
+   [discord]
+   enabled = true
+   owner_user_id = "your user id"
+   ```
+
+4. Install the extra (the Docker image already includes it) and restart:
+
+   ```bash
+   sudo -u mflbot /opt/mflbot/.venv/bin/pip install '/opt/mflbot[solver,web,discord]'
+   sudo systemctl restart mflbot-web          # or mflbot, for the headless unit
+   journalctl -u mflbot-web | grep -i discord
+   ```
+
+5. Turn on two-factor authentication for your Discord account. It can now
+   approve MFL moves.
+
+The bot needs no privileged gateway intents. With the bot enabled but no token
+set, or without the discord extra installed, `bot run` and `bot serve` refuse
+to start and say which one is missing.
 
 ## Notice when it stops
 

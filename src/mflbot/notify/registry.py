@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from .base import Notifier, NullNotifier
+from .discord import DiscordNotifier
 from .email_stub import EmailNotifier
 from .telegram_stub import TelegramNotifier
 from .webhook import WebhookNotifier
@@ -13,6 +14,7 @@ log = logging.getLogger(__name__)
 
 TRANSPORTS = {
     WebhookNotifier.transport_id: WebhookNotifier,
+    DiscordNotifier.transport_id: DiscordNotifier,
     EmailNotifier.transport_id: EmailNotifier,
     TelegramNotifier.transport_id: TelegramNotifier,
 }
