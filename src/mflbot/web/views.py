@@ -126,6 +126,34 @@ def editable_fields(recommendation: Recommendation) -> list[dict[str, Any]]:
     return out
 
 
+def changed_fields(recommendation: Recommendation, submitted: dict[str, str]) -> dict[str, str]:
+    """The edits a form actually asks for, by payload field name.
+
+    ``submitted`` maps field names to what the form carried. Only fields the
+    form carried, and only those whose value changed, are returned: an
+    untouched form is a no-op rather than a payload rewrite that would withdraw
+    an approval for no reason, and a field the form never mentioned is not an
+    instruction to clear it. Shared by every surface with an edit form.
+
+    Raises :class:`ValueError` when a list would be emptied -- an action with
+    nothing in it is not an action.
+    """
+    changes: dict[str, str] = {}
+    for field in editable_fields(recommendation):
+        if field["name"] not in submitted:
+            continue
+        value = str(submitted[field["name"]]).strip()
+        if value == field["value"].strip():
+            continue
+        if field["is_list"] and not value and field["value"]:
+            raise ValueError(
+                f"{field['label']} cannot be emptied -- an action with nothing in it "
+                f"is not an action. Reject this recommendation instead."
+            )
+        changes[field["name"]] = value
+    return changes
+
+
 def payload_rows(recommendation: Recommendation, names: dict[str, str]) -> list[dict]:
     """The literal payload, one row per field, with player names alongside."""
     rows = []

@@ -462,20 +462,11 @@ def build_app(
         check_csrf(request, csrf_token)
         session = session_of(request)
         target = f"/recommendations/{recommendation_id}"
-        token = context.tokens.latest_for(recommendation_id)
-        if token is None:
-            flash(
-                session,
-                "There is no live approval for this action. Approve it first; an "
-                "approval is what authorises a submission.",
-                "bad",
-            )
-            return RedirectResponse(target, status_code=303)
-        _submit(session, recommendation_id, token)
+        _submit(session, recommendation_id)
         bus.publish("state.changed", reason="submit")
         return RedirectResponse(target, status_code=303)
 
-    def _submit(session: Session, recommendation_id: str, token) -> None:
+    def _submit(session: Session, recommendation_id: str, token=None) -> None:
         """The one path from a browser to an MFL write."""
         if not allow_submissions:
             flash(
@@ -485,12 +476,8 @@ def build_app(
                 "info",
             )
             return
-        recommendation = context.store.get(recommendation_id)
-        if recommendation is None:  # pragma: no cover - approved then deleted
-            flash(session, "That recommendation no longer exists.", "bad")
-            return
         try:
-            outcome = context.execute_approved(recommendation, token)
+            outcome = context.submit_approved(recommendation_id, token)
         except MFLBotError as exc:
             flash(session, f"Not submitted: {exc}", "bad")
             return
@@ -525,27 +512,16 @@ def build_app(
         if recommendation is None:
             raise HTTPException(status_code=404, detail="No such recommendation.")
 
-        # Only fields the form actually carried, and only those whose value
-        # changed, are passed on: an untouched form is a no-op rather than a
-        # payload rewrite that would invalidate an approval for no reason, and
-        # a field the form never mentioned is not an instruction to clear it.
-        changes: dict[str, str] = {}
-        for field in views.editable_fields(recommendation):
-            key = f"field_{field['name']}"
-            if key not in form:
-                continue
-            submitted = str(form.get(key, "")).strip()
-            if submitted == field["value"].strip():
-                continue
-            if field["is_list"] and not submitted and field["value"]:
-                flash(
-                    session,
-                    f"{field['label']} cannot be emptied -- an action with nothing "
-                    f"in it is not an action. Reject this recommendation instead.",
-                    "bad",
-                )
-                return RedirectResponse(target, status_code=303)
-            changes[field["name"]] = submitted
+        submitted = {
+            field["name"]: str(form.get(f"field_{field['name']}", ""))
+            for field in views.editable_fields(recommendation)
+            if f"field_{field['name']}" in form
+        }
+        try:
+            changes = views.changed_fields(recommendation, submitted)
+        except ValueError as exc:
+            flash(session, str(exc), "bad")
+            return RedirectResponse(target, status_code=303)
         if not changes:
             flash(session, "Nothing changed.", "info")
             return RedirectResponse(target, status_code=303)

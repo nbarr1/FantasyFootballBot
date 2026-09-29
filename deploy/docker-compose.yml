@@ -28,6 +28,8 @@ services:
       # generated key, and a new key invalidates outstanding approvals.
       MFLBOT_APPROVAL_SECRET: "${MFLBOT_APPROVAL_SECRET:?set this in deploy/.env}"
       MFLBOT_WEBHOOK_URL: "${MFLBOT_WEBHOOK_URL:-}"
+      # Only used when [discord] enabled = true in config.toml.
+      MFLBOT_DISCORD_TOKEN: "${MFLBOT_DISCORD_TOKEN:-}"
       # A missed check-in here is how you learn the container stopped.
       MFLBOT_HEARTBEAT_URL: "${MFLBOT_HEARTBEAT_URL:-}"
       # Signs you in to the dashboard. Required, because the container serves

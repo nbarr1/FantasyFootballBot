@@ -3,7 +3,8 @@
 # The dashboard runs as the default command, with the scheduler in the same
 # process (one process, one SQLite writer). It only ever produces
 # recommendations; approving one is a separate, deliberate act -- in the
-# dashboard, or from the CLI (`docker exec ... bot pending`).
+# dashboard, in Discord when [discord] is enabled, or from the CLI
+# (`docker exec ... bot pending`).
 #
 # Serving on 0.0.0.0 inside the container requires MFLBOT_WEB_PASSWORD; publish
 # the port to 127.0.0.1 on the host, or put TLS in front of it.
@@ -20,7 +21,7 @@ WORKDIR /app
 # reinstalls its dependencies with it.
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --no-cache-dir '.[solver,web]'
+RUN pip install --no-cache-dir '.[solver,web,discord]'
 
 # State lives on a volume: the database, the response cache, and the approval
 # signing key. Without a volume, every restart loses pending recommendations

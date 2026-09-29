@@ -8,8 +8,10 @@ recommendation:
 2. Trade proposals, and responses to offers you receive
 3. Weekly starting lineups
 
-It runs as a **web application** (`bot serve`) or from the **command line** --
-the same bot either way, over the same database, enforcing the same rules.
+It runs as a **web application** (`bot serve`) or from the **command line**,
+and can also send each recommendation to your **Discord** direct messages with
+buttons to decide on it. It's the same bot every way, over the same database,
+enforcing the same rules.
 
 **It never submits anything to MFL without your explicit, per-action approval.**
 That is a design invariant, not a setting. There is no auto mode, no "approve
@@ -30,6 +32,7 @@ that a future change cannot quietly undo it:
 | Editing revokes approval | An edit changes the payload hash, so a token issued before the edit no longer matches. |
 | Approval is single-use | Consumption is one atomic `UPDATE ... WHERE consumed_at IS NULL`; two racing executors produce exactly one winner. |
 | Changing your mind revokes | Rejecting or editing a recommendation revokes any unspent token for it. The executor re-reads the recommendation and refuses unless it is approved *now* and the token was issued for *it*. |
+| Only the owner's Discord account can decide, one recommendation per button | Every Discord button and command checks the presser's user id against `[discord] owner_user_id` before touching anything; the config refuses `enabled = true` without one. Each button's id names one action on one recommendation id (`mflbot:approve:<id>`), and there is no batch button or command. Decisions go through the same approval channel and executor as the CLI and the dashboard. |
 | Silence never executes | Recommendations expire. Expiry is the only terminal state that inaction can produce. |
 | A guessed endpoint never fires | A write capability without a `DOC_VERIFIED` entry refuses outright -- no default, no fallback. See "Endpoint verification" below for which capabilities that currently is (five of six) and isn't (waiver-order claims). |
 | The world may have moved | The executor re-validates preconditions immediately before submitting, and abandons rather than adapting if state changed. |
@@ -120,6 +123,7 @@ git clone https://github.com/nbarr1/FantasyFootballBot
 cd FantasyFootballBot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[solver,web,dev]'  # 'solver': exact ILP lineups; 'web': the dashboard
+pip install -e '.[discord]'         # optional: the Discord bot
 ```
 
 Requires Python 3.11+.
@@ -226,11 +230,102 @@ recommendation, never a button that fires a batch.
 Output is passed through the same redactor the log formatters use before it
 reaches a browser.
 
+## Discord
+
+The bot can DM you a card for each recommendation, with its buttons on it:
+
+- **Approve** records your decision and mints the approval token, as the
+  dashboard does. Nothing is sent to MFL yet.
+- **Submit to MFL** appears once a recommendation is approved, and spends that
+  approval. It's always a second, separate click. There's no "approve and
+  submit" button in Discord.
+- **Reject** asks for an optional reason and withdraws any unspent approval.
+- **Edit** opens a form with the payload's editable fields. Editing withdraws
+  any approval, so you approve the edited version afresh.
+
+Each card shows the action, the reasons, the caveats, the literal payload and
+the expiry time. When anything has to be cut short to fit Discord's size
+limits, the card says so and `/show <id>` prints the rest. Once a
+recommendation is decided or expires, its card is redrawn without buttons.
+
+Four slash commands work in the bot's DMs, and only there: `/pending`,
+`/show <id>`, `/status` and `/heartbeat`. They only read, and their replies
+are visible only to you.
+
+### How it runs
+
+The bot is a Discord *bot application*: it connects out to Discord's gateway,
+so it needs no public address and no open port, and it works behind a home
+router. It runs inside `bot run` or `bot serve`, on its own thread, whenever
+`[discord] enabled = true`. Other commands (`bot pending`, `bot analyse`, and
+so on) never start it.
+
+Cards come from the database rather than from whatever made the
+recommendation. Every `publish_seconds` (30 by default), the bot posts a card
+for each new pending recommendation and redraws cards whose recommendation has
+changed. A recommendation made by a one-off `bot analyse` is posted on the next
+pass of the running bot. Each card's message is recorded in the database, so a
+restart neither posts a card twice nor loses one, and buttons on a card posted
+before a restart still work after it.
+
+To have alerts reach you in Discord too (stalled jobs, offers that need your
+judgement), set `[notify] transport = "discord"`. The bot then sends a one-line
+announcement for urgent lineup changes and lets the cards carry the detail.
+
+### Your Discord account becomes an approval credential
+
+Anyone who controls your Discord account can approve and submit MFL moves
+while the bot is running. So:
+
+- **Only one account can use it.** Every button press and command is checked
+  against `[discord] owner_user_id` first. Anyone else is refused, and nothing
+  changes. There's no setting that lets other people press the buttons.
+- **A button acts on one recommendation.** It names exactly one action and one
+  recommendation id. There's no batch.
+- **A button on an old card can't act on a recommendation that has moved
+  on.** Each press is re-checked against the database, and the executor
+  refuses a submission unless the recommendation is approved now, with a token
+  issued for its current payload.
+- **Submitting can stay off.** With `[discord] allow_submissions = false`,
+  Discord can approve, reject and edit, and submitting stays with the
+  dashboard or `bot execute`.
+- **Turn on two-factor authentication** for your Discord account.
+
+### Set it up
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications),
+   create an application and add a bot to it. Copy the bot's token into
+   `MFLBOT_DISCORD_TOKEN` in your environment or secrets file, never into
+   `config.toml`.
+2. Invite the bot to a server you're in, with the `bot` and
+   `applications.commands` scopes. A private server with just you in it is
+   fine. A bot can only DM someone it shares a server with.
+3. In Discord, turn on Developer Mode (Settings > Advanced), right-click your
+   own name, and choose **Copy User ID**.
+4. Install the extra and set the `[discord]` section:
+
+   ```bash
+   pip install '.[discord]'
+   ```
+
+   ```toml
+   [discord]
+   enabled = true
+   owner_user_id = "your user id"
+   ```
+
+5. Start `bot run` or `bot serve --with-scheduler`. The bot prints a line when
+   it starts, and DMs you the first card on its next pass.
+
+The bot asks Discord for no privileged gateway intents: buttons and slash
+commands don't need to read message content.
+
 ## Deciding
 
-Either surface. In the dashboard, every pending recommendation has its
-rationale, its evidence, its caveats and the literal payload on one page, with
-Approve / Reject / Edit next to them. From the CLI:
+Any of the three surfaces. In the dashboard, every pending recommendation has
+its rationale, its evidence, its caveats and the literal payload on one page,
+with Approve / Reject / Edit next to them. In Discord, each one is a card with
+its buttons (see "Discord" earlier). From the CLI:
 
 ```bash
 bot pending                    # everything awaiting a decision
@@ -253,9 +348,11 @@ bot serve --with-scheduler           # scheduler + dashboard, one process
 ```
 
 The scheduler polls, analyses and notifies. It **never** submits. Approving is
-always a separate, interactive act. Run one of the two, not both: two processes
-against one SQLite file contend for its write lock. See "Where to run it" below,
-and [`deploy/`](deploy/) for systemd units (one per shape) and the Dockerfile.
+always a separate, interactive act. With `[discord] enabled = true`, either
+command also starts the Discord bot in the same process. Run one of the two,
+not both: two processes against one SQLite file contend for its write lock. See
+"Where to run it" below, and [`deploy/`](deploy/) for systemd units (one per
+shape) and the Dockerfile.
 
 | Job | Cadence |
 |---|---|
@@ -445,12 +542,15 @@ mflbot/
   analysis/     rules parser, valuation core, lineup optimiser, waivers, trades
   recommend/    recommendation records and the literal action payloads
   approval/     ApprovalChannel interface, token service, CLI channel,
-                web channel (delegates to the CLI one, so they cannot drift)
+                web and Discord channels (both delegate to the CLI one, so
+                they cannot drift)
   web/          the dashboard: routes, templates, sessions/CSRF, the
                 allowlisted job bridge, the server-sent-events stream
+  discordbot/   the Discord bot: owner-only actions, cards and the publisher
+                (no Discord code), and the discord.py adapter
   execute/      preconditions, submission, confirmation, audit
-  notify/       webhook transport, the dead man's check-in ping; email and
-                telegram stubs
+  notify/       webhook and Discord transports, the dead man's check-in
+                ping; email and telegram stubs
   schedule/     APScheduler jobs, and the watchdog that reports when they
                 stop keeping up
 ```
@@ -484,7 +584,12 @@ directly.
   `bot config-summary` lists it, and the feature that needs it stays off or
   says so; nothing is guessed in its place.
 - **Email and Telegram notifiers are stubs**, as are the paid news providers.
-  The webhook transport (which works with Discord) is implemented.
+  The webhook transport (which works with a Discord channel webhook) and the
+  Discord bot transport are implemented.
+- **Discord alerts wait in memory.** While the bot is disconnected from
+  Discord, up to 50 alerts are held in memory, oldest dropped first, and a
+  restart loses them. Recommendation cards are unaffected: they come from the
+  database. The bot also has one owner and posts only to that owner's DMs.
 - **The dashboard has one account and no TLS.** It is a single-user tool: one
   shared secret, no roles, no per-user audit beyond `web:` on the token. It
   serves plain HTTP and expects a tunnel or a reverse proxy in front of it for
@@ -495,7 +600,7 @@ directly.
 ## Tests
 
 ```bash
-pytest              # 309 tests
+pytest              # 349 tests; 10 Discord adapter tests skip without discord.py
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`
@@ -513,4 +618,7 @@ shared database connection from many threads at once; and `test_web_app.py`,
 which asserts the same things through the dashboard: no session, no CSRF token,
 or a cross-site Origin and the approval does not happen; rejecting or editing
 after approving withdraws the approval, so a stale Submit button sends nothing;
-and no action button can reach a command that writes.
+and no action button can reach a command that writes. `test_discord.py` does
+the same for the Discord bot: a stranger's button press changes nothing,
+approving and submitting are separate clicks, and a button on an out-of-date
+card sends nothing.

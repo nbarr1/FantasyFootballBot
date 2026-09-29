@@ -74,6 +74,21 @@ def _load_secrets_file(path: Path) -> dict[str, str]:
     return values
 
 
+def read_secret(name: str, env: dict[str, str] | None = None) -> str | None:
+    """A secret from the environment, else from ``MFLBOT_SECRETS_FILE``.
+
+    The same two places, in the same order, that :meth:`Credentials.from_env`
+    reads MFL credentials from. Empty means unset.
+    """
+    source = os.environ if env is None else env
+    if source.get(name):
+        return source[name]
+    secrets_path = source.get(ENV_SECRETS_FILE)
+    if secrets_path:
+        return _load_secrets_file(Path(secrets_path)).get(name) or None
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class Credentials:
     """Whatever credentials the environment actually provides. Possibly none."""

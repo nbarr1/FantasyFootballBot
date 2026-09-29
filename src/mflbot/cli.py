@@ -35,7 +35,7 @@ from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, load_config
 from .context import BotContext
-from .errors import ApprovalError, MFLBotError
+from .errors import ApprovalError, ConfigError, MFLBotError
 from .logging_setup import setup_logging
 
 #: The config template ships inside the package. Resolving it through
@@ -560,6 +560,65 @@ def cmd_audit(args, context: BotContext) -> int:
     return 0
 
 
+DISCORD_TOKEN_ENV = "MFLBOT_DISCORD_TOKEN"
+
+
+def prepare_discord(context: BotContext):
+    """Build the Discord bot's runner, without starting it, when [discord] is
+    enabled. Returns None when Discord is off.
+
+    Raises :class:`ConfigError` when the token or the discord extra is
+    missing, so a command can refuse before it has started anything else.
+    """
+    settings = context.config.discord
+    if not settings.enabled:
+        return None
+    from .mfl.auth import read_secret
+
+    token = read_secret(DISCORD_TOKEN_ENV)
+    if not token:
+        raise ConfigError(
+            f"[discord] is enabled but {DISCORD_TOKEN_ENV} is not set. Put the bot "
+            f"token from the Discord Developer Portal in your environment or "
+            f"secrets file."
+        )
+    try:
+        from .discordbot.client import DiscordRunner, MFLBotClient
+    except ImportError as exc:
+        raise ConfigError(
+            "[discord] is enabled but discord.py is not installed: "
+            "pip install 'mflbot[discord]'"
+        ) from exc
+    from .discordbot.actions import DiscordActions
+    from .notify.discord import DiscordNotifier
+
+    notifier = context.notifier if isinstance(context.notifier, DiscordNotifier) else None
+    client = MFLBotClient(
+        DiscordActions(context, settings),
+        publish_seconds=settings.publish_seconds,
+        notifier=notifier,
+    )
+    return DiscordRunner(client, token)
+
+
+def _launch_discord(runner) -> None:
+    runner.start()
+    print("  Discord: bot started; recommendations will arrive by DM.")
+
+
+def start_discord(context: BotContext):
+    """Start the Discord bot in this process when [discord] is enabled.
+
+    Returns the runner to stop on exit, or None when Discord is off. Only the
+    long-running commands (`run`, `serve`) call this, so a one-off command
+    never connects a second copy of the bot.
+    """
+    runner = prepare_discord(context)
+    if runner is not None:
+        _launch_discord(runner)
+    return runner
+
+
 def cmd_run(args, context: BotContext) -> int:
     """Run the scheduler in the foreground."""
     import time
@@ -567,6 +626,9 @@ def cmd_run(args, context: BotContext) -> int:
     from .schedule.jobs import JobRunner, build_scheduler
 
     context.client.login()
+    # Before the scheduler, so a missing Discord token or extra stops the
+    # command before any job has run.
+    discord_runner = start_discord(context)
     scheduler = build_scheduler(JobRunner(context), context.config)
     scheduler.start()
     print("Scheduler running. Recommendations will appear in `bot pending`.")
@@ -577,6 +639,8 @@ def cmd_run(args, context: BotContext) -> int:
             time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
+        if discord_runner is not None:
+            discord_runner.stop()
         print("\nStopped.")
     return 0
 
@@ -616,6 +680,9 @@ def cmd_serve(args, context: BotContext) -> int:
             file=sys.stderr,
         )
         return 1
+    # Before anything is printed, so a missing Discord token or extra is the
+    # only thing on screen rather than following a login link that never works.
+    discord_runner = prepare_discord(context)
 
     security = WebSecurity.create(
         password, session_ttl_minutes=settings.session_ttl_minutes
@@ -662,10 +729,16 @@ def cmd_serve(args, context: BotContext) -> int:
     # proxy_headers=False: failed logins are throttled per connecting address,
     # and with proxy headers on, uvicorn replaces that address with whatever
     # X-Forwarded-For a local client sends -- a fresh one for every guess.
-    uvicorn.run(
-        app, host=host, port=port, log_level="info", log_config=None,
-        proxy_headers=False,
-    )
+    if discord_runner is not None:
+        _launch_discord(discord_runner)
+    try:
+        uvicorn.run(
+            app, host=host, port=port, log_level="info", log_config=None,
+            proxy_headers=False,
+        )
+    finally:
+        if discord_runner is not None:
+            discord_runner.stop()
     return 0
 
 
