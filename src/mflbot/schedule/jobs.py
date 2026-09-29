@@ -121,9 +121,14 @@ class JobRunner:
             w: sync_projections(self.context.client, self.context.repos, w, force=True)
             for w in (week, week + 1)
         }
-        if not counts[week]:
-            raise RuntimeError(f"MFL published no projections for week {week}")
-        return ", ".join(f"week {w}: {n} rows" for w, n in counts.items())
+        # No projections is reported, not raised. Some MFL hosts publish none;
+        # the analysis engines already block on that and say why, and a job
+        # that failed every day for it would silence the dead man's ping for
+        # good -- an alarm for a data gap rather than a stalled bot.
+        return ", ".join(
+            f"week {w}: {n} rows" if n else f"week {w}: MFL published none"
+            for w, n in counts.items()
+        )
 
     def ingest_news(self) -> str:
         from ..ingest.news.registry import build_sources, ingest_news

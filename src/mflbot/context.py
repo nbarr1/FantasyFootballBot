@@ -149,7 +149,7 @@ class BotContext:
         owner = settings.owner_franchise if settings else None
         return owner.franchise_id if owner else None
 
-    def current_week(self, *, refresh: bool = False) -> int | None:
+    def current_week(self) -> int | None:
         """The current NFL week, read from MFL rather than computed from a date.
 
         The answer is kept for :data:`CURRENT_WEEK_TTL` and then asked for
@@ -159,7 +159,7 @@ class BotContext:
         unknown rather than assumed unchanged.
         """
         cached = self.repos.get_state_entry("current_week")
-        if cached is not None and not refresh:
+        if cached is not None:
             value, updated_at = cached
             if (
                 value.isdigit()
@@ -379,7 +379,9 @@ class BotContext:
         changes = diff_lineup(solution, submitted, lookup) if submitted else []
         escalations = self._escalations(submitted, lookup, injuries, playing, settings)
 
-        if submitted and not changes:
+        # "Already matches" is only true if nothing submitted will fail to
+        # play; a starter who is OUT is worth a message even with no change.
+        if submitted and not changes and not escalations:
             return (
                 f"Week {week}: the submitted lineup already matches the highest "
                 f"projected legal lineup ({solution.total_projection:.1f} pts). "

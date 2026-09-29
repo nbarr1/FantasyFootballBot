@@ -19,8 +19,8 @@ starter count decides how many of them are filled in all. When that total is
 unknown, only the minimums are filled and the solution says so -- it does not
 guess at a lineup size.
 
-A player designated OUT (or IR, suspended, inactive) is never started: he
-scores nothing, so the seat goes to the best healthy alternative, and the
+A player designated OUT (or IR, suspended, inactive) is never started: they
+score nothing, so the seat goes to the best healthy alternative, and the
 solution lists who was benched and why.
 
 Every starter carries risk flags, and the result is diffed against what is

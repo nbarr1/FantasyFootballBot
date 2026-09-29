@@ -103,13 +103,16 @@ def test_projections_are_refreshed_for_this_week_and_next(monkeypatch, repos, co
     assert "week 5" in result
 
 
-def test_no_projections_this_week_is_a_failed_refresh(monkeypatch, repos) -> None:
+def test_a_host_without_projections_is_reported_not_a_stalled_job(monkeypatch, repos) -> None:
+    """Some MFL hosts publish no projections. That is a data gap the analysis
+    engines already report; failing the job for it would keep the watchdog
+    stale, and the dead man's ping silent, for the whole season."""
     monkeypatch.setattr(
         "mflbot.ingest.scores.sync_projections", lambda client, repos, week, force=False: 0
     )
     context = SimpleNamespace(client=None, repos=repos, current_week=lambda: 5)
-    with pytest.raises(RuntimeError, match="no projections"):
-        jobs_module.JobRunner(context).refresh_projections()
+    result = jobs_module.JobRunner(context).refresh_projections()
+    assert "week 5: MFL published none" in result
 
 
 def test_a_failed_news_source_fails_the_job(monkeypatch, repos) -> None:
