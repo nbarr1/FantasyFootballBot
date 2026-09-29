@@ -122,8 +122,13 @@ stale, if you would rather drive it from a cron you already have.
 Run these once, in order:
 
 ```bash
-bot verify-endpoints    # required: writes stay inert until this passes
 bot sync-config         # pull scoring rules and league settings
 bot whoami              # find your franchise id, then set it in config.toml
 bot config-summary      # confirm the parsed settings match your league
 ```
+
+`bot verify-endpoints` is not needed: the committed `endpoints.lock.json`
+already pins the verified write endpoints. It must sit next to `config.toml`
+(for Docker, in `deploy/state/`), because that is where the bot looks for it.
+If you do run `bot verify-endpoints`, it only updates entries it can confirm and
+keeps the rest.

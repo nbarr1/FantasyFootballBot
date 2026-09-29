@@ -22,11 +22,11 @@ What that bridge is allowed to reach is fenced deliberately:
 
 from __future__ import annotations
 
-import contextlib
 import io
 import logging
 import queue
 import shlex
+import sys
 import threading
 import uuid
 from collections.abc import Callable
@@ -362,11 +362,42 @@ class _StreamCapture(io.TextIOBase):
         return True
 
 
+class _ThreadStdout(io.TextIOBase):
+    """``sys.stdout`` for the duration of a job, routed by thread.
+
+    ``contextlib.redirect_stdout`` swaps stdout for the whole process, so a
+    print from any other thread -- a scheduler job, a request handler -- would
+    land in the job's console. Only the job's own thread is captured here;
+    every other thread keeps writing where it was.
+    """
+
+    def __init__(self, original, capture: _StreamCapture, thread_id: int) -> None:
+        self._original = original
+        self._capture = capture
+        self._thread_id = thread_id
+
+    def _target(self):
+        return self._capture if threading.get_ident() == self._thread_id else self._original
+
+    def write(self, text: str) -> int:  # type: ignore[override]
+        return self._target().write(text)
+
+    def flush(self) -> None:
+        if threading.get_ident() != self._thread_id:
+            self._original.flush()
+
+    def writable(self) -> bool:
+        return True
+
+
 class _LogCapture(logging.Handler):
-    def __init__(self, emit: Callable[[str], None]) -> None:
+    """Collects the job's own log records -- only those from its thread."""
+
+    def __init__(self, emit: Callable[[str], None], thread_id: int) -> None:
         super().__init__(level=logging.INFO)
         self._emit = emit
         self.setFormatter(RedactingFormatter("%(levelname)-7s %(name)s: %(message)s"))
+        self.addFilter(lambda record: record.thread == thread_id)
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -499,14 +530,19 @@ class JobManager:
         run.started_at = datetime.now(UTC)
         self._publish(run)
 
-        handler = _LogCapture(emit)
+        me = threading.get_ident()
+        handler = _LogCapture(emit, me)
         root = logging.getLogger()
         root.addHandler(handler)
         try:
             args = build_parser().parse_args(list(run.argv))
             capture = _StreamCapture(emit)
-            with contextlib.redirect_stdout(capture):
+            original = sys.stdout
+            sys.stdout = _ThreadStdout(original, capture, me)
+            try:
                 exit_code = args.func(args, self._context)
+            finally:
+                sys.stdout = original
             capture.flush()
             run.exit_code = int(exit_code or 0)
             run.status = JobStatus.SUCCEEDED if run.exit_code == 0 else JobStatus.FAILED

@@ -29,6 +29,7 @@ that a future change cannot quietly undo it:
 | Approval covers one exact action | The token is an HMAC over the recommendation id **and the hash of the literal payload**. A different payload fails verification. |
 | Editing revokes approval | An edit changes the payload hash, so a token issued before the edit no longer matches. |
 | Approval is single-use | Consumption is one atomic `UPDATE ... WHERE consumed_at IS NULL`; two racing executors produce exactly one winner. |
+| Changing your mind revokes | Rejecting or editing a recommendation revokes any unspent token for it. The executor re-reads the recommendation and refuses unless it is approved *now* and the token was issued for *it*. |
 | Silence never executes | Recommendations expire. Expiry is the only terminal state that inaction can produce. |
 | A guessed endpoint never fires | A write capability without a `DOC_VERIFIED` entry refuses outright -- no default, no fallback. See "Endpoint verification" below for which capabilities that currently is (five of six) and isn't (waiver-order claims). |
 | The world may have moved | The executor re-validates preconditions immediately before submitting, and abandons rather than adapting if state changed. |
@@ -57,10 +58,15 @@ rather than guess, `analyse_waivers` blocks that one waiver system outright
 (`bot config-summary` will say so plainly if your league uses it). FCFS and
 blind-bid leagues are unaffected.
 
-If you ever need to re-verify against a different league or season (or MFL
-changes something), `bot verify-endpoints` re-fetches the live `api_info` page
-and regenerates the lock file the same way; it only overwrites entries it can
-actually confirm.
+You don't need to run `bot verify-endpoints` for a normal install. If you ever
+need to re-verify against a different league or season (or MFL changes
+something), it re-fetches the live `api_info` page and updates the lock file. It
+only changes entries it can confirm: an entry it could not find this time is
+kept as it was and reported as `[KEPT]`, never deleted.
+
+The lock file is read from the directory that holds `config.toml`, as are the
+database, the approval signing key and the response cache -- not from wherever
+you happen to run `bot`.
 
 Read endpoints are less dangerous — a wrong name fails loudly with no side
 effect — so they shipped enabled from an independently written third-party
@@ -79,9 +85,11 @@ the correct state until ingestion runs against your league.
 
 Consequences you will notice, all deliberate:
 
-- If the scoring rules cannot be fully parsed, scoring-dependent features are
-  **blocked** and the specific unparseable rules are reported. There is no
-  fallback to standard PPR.
+- Players are ranked by the points MFL itself projects for your league
+  (`projectedScores`). The bot does not compute fantasy points, so it never
+  substitutes a standard scoring format for yours. It still parses your
+  scoring rules, reports any it cannot read, and uses them to check coverage
+  (`bot config-summary`, `bot validate-scoring`).
 - If MFL does not report your blind-bid budget, no bid is proposed. A bid sized
   from a guessed budget would be submitted for real.
 - If the waiver system cannot be determined, no claim is prepared — the workflow
@@ -89,6 +97,13 @@ Consequences you will notice, all deliberate:
 - If the trade deadline is unknown, no proposals are drafted.
 - A player with no projection is never silently treated as scoring zero, and is
   never the one the bot suggests you drop.
+- A player designated OUT, IR, suspended or inactive is never recommended as a
+  starter. The recommendation says who was benched and why.
+- If a lineup slot allows a range of starters and the league's total starter
+  count is unknown, only each slot's minimum is filled, and the recommendation
+  says so.
+- A trade offer that includes draft picks, or players the bot has no data for,
+  is never given an accept or reject verdict on partial numbers.
 
 `bot status` and `bot config-summary` list exactly what is blocked and why —
 and `bot status` also reports when each scheduled job last succeeded, so an
@@ -143,7 +158,7 @@ bot sync-players
 bot poll                       # rosters, free agents, transactions
 bot sync-projections
 bot news
-bot analyse lineup             # or: waivers, trades
+bot analyse lineup             # or: waivers, trades, offers
 ```
 
 ## The web application
@@ -215,8 +230,8 @@ Approve / Reject / Edit next to them. From the CLI:
 bot pending                    # everything awaiting a decision
 bot show <id>                  # rationale, evidence, caveats, literal payload
 bot approve <id>               # approve THIS one, then submit it
-bot reject <id> "reason"
-bot edit <id> bid_amount=12    # edit, then approve separately
+bot reject <id> "reason"       # also withdraws an approval not yet submitted
+bot edit <id> bid_amount=12    # edit (withdrawing any approval), then approve
 bot audit                      # every write attempted and what happened
 ```
 
@@ -240,12 +255,18 @@ and [`deploy/`](deploy/) for systemd units (one per shape) and the Dockerfile.
 |---|---|
 | Config + scoring refresh | daily (catches mid-season scoring edits) |
 | Player database | daily (MFL's stated limit) |
+| Projections | daily, for this week and next |
 | Transactions / rosters / free agents | every 45 min, configurable |
+| Trade offers made to you | every 45 min, with the poll; each offer is evaluated once |
 | News ingestion | every 45 min |
 | Waiver analysis | weekly, plus on any roster or free-agent change |
-| Trade analysis | weekly, plus on an incoming offer |
+| Trade proposals | weekly |
 | Lineup analysis | T-48h, T-12h, T-2h from your league's **real** deadline |
 | Watchdog | every 15 min — checks the jobs above are keeping up, and checks in while they are |
+
+On startup, any job whose last success is older than its own cadence runs
+straight away, so a restart after downtime catches up rather than waiting for
+the next scheduled slot.
 
 ## Trusting the silence
 
@@ -428,10 +449,12 @@ mflbot/
                 stop keeping up
 ```
 
-Everything downstream — lineup ranking, waiver value, trade fairness — routes
-through one function: `ScoringModel.score`, which converts a stat line to points
-using your league's actual parsed rules. When the commissioner edits scoring, the
-daily refresh updates one object and every recommendation moves with it.
+Lineup ranking, waiver value and trade fairness all use the points MFL
+projects for your league (`projectedScores`), refreshed daily. The scoring-rule
+parser and `ScoringModel.score` do not feed recommendations: they describe your
+league's rules in `bot config-summary` and back `bot validate-scoring`, and a
+stat-line source (see "Known gaps") is what would let them score players
+directly.
 
 ## Known gaps
 
@@ -447,8 +470,13 @@ daily refresh updates one object and every recommendation moves with it.
   full replay needs a stat-line source from one of the paid providers stubbed
   in `mflbot/ingest/news/paid_stubs.py` — MFL's own docs name FantasyData.com,
   Sportradar and XML Team as the sanctioned options.
-- **Draft picks are not valued** in trade analysis, and are flagged as excluded
-  when an offer contains them.
+- **Draft picks are not valued** in trade analysis. An offer that contains them
+  gets no accept or reject recommendation; you are notified and decide.
+- **Some MFL field names are inferred rather than confirmed.** The lineup
+  deadline, the league's total starter count, and the fields of a pending
+  trade offer are read by name from MFL's exports. Where a name is not found,
+  `bot config-summary` lists it, and the feature that needs it stays off or
+  says so; nothing is guessed in its place.
 - **Email and Telegram notifiers are stubs**, as are the paid news providers.
   The webhook transport (which works with Discord) is implemented.
 - **The dashboard has one account and no TLS.** It is a single-user tool: one
@@ -461,7 +489,7 @@ daily refresh updates one object and every recommendation moves with it.
 ## Tests
 
 ```bash
-pytest              # 227 tests
+pytest              # 296 tests
 ```
 
 Run it as `pytest`, not `python -m pytest`. The two differ: `python -m pytest`
@@ -474,8 +502,9 @@ The ones that encode the safety properties: `test_write_isolation.py`,
 `test_end_to_end.py` — which walks the entire pipeline against a simulated MFL
 and asserts that nothing is submitted without an approval — and
 `test_heartbeat.py`, which asserts a stalled bot stops checking in and that the
-check-in URL never reaches a log; and `test_web_app.py`, which asserts the same
-things through the dashboard: no
-session, no CSRF token, or a cross-site Origin and the approval does not
-happen; an edit after approving invalidates the token; and no action button can
-reach a command that writes.
+check-in URL never reaches a log; `test_storage_concurrency.py`, which runs the
+shared database connection from many threads at once; and `test_web_app.py`,
+which asserts the same things through the dashboard: no session, no CSRF token,
+or a cross-site Origin and the approval does not happen; rejecting or editing
+after approving withdraws the approval, so a stale Submit button sends nothing;
+and no action button can reach a command that writes.

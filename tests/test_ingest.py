@@ -177,3 +177,13 @@ def test_a_status_only_roster_change_is_a_change(repos) -> None:
     assert diff.roster_changed
     [entry] = repos.current_rosters("TEST0001", 2026)["0001"]
     assert not entry.is_active_roster
+
+
+def test_a_unique_name_alone_is_not_a_crosswalk_match() -> None:
+    from mflbot.domain.models import Player
+    from mflbot.ingest.news.sleeper import PlayerCrosswalk
+
+    crosswalk = PlayerCrosswalk([Player("p-1", "Synthetic Name", "RB", "AAA")])
+    assert crosswalk.resolve("Synthetic Name", "WR", "ZZZ") is None
+    assert crosswalk.resolve("Synthetic Name", "RB", "ZZZ") == "p-1"
+    assert crosswalk.resolve("Synthetic Name", None, "AAA") == "p-1"

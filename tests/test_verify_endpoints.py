@@ -120,3 +120,42 @@ def test_read_endpoints_declare_their_provenance() -> None:
     for name, endpoint in registry.reads.items():
         assert endpoint.provenance in set(Provenance), name
         assert endpoint.ttl_seconds > 0, name
+
+
+def test_verification_keeps_entries_it_could_not_confirm(tmp_path) -> None:
+    """A fetch that misses a capability must not delete its pinned entry."""
+    import json
+    from types import SimpleNamespace
+
+    from mflbot.mfl.verify import verify_endpoints
+
+    lock_path = tmp_path / "endpoints.lock.json"
+    lock_path.write_text(json.dumps({
+        "_source": "hand-verified",
+        "reads": {},
+        "writes": {
+            "waiver_claim_bbid": {
+                "_note": "pinned by hand",
+                "type_name": "blindBidWaiverRequest",
+                "params": ["L", "PICKS"],
+                "field_map": {"league_id": "L", "picks": "PICKS", "round": "ROUND"},
+            }
+        },
+    }))
+    # Documentation that mentions only the lineup import.
+    page = '<a href="import?TYPE=lineup">lineup</a> takes L W STARTERS'
+    client = SimpleNamespace(
+        league=SimpleNamespace(api_docs_url="https://example.invalid/api_info"),
+        _client=SimpleNamespace(get=lambda url: SimpleNamespace(status_code=200, text=page)),
+    )
+
+    report = verify_endpoints(client, EndpointRegistry.load(lock_path), lock_path=lock_path)
+
+    saved = json.loads(lock_path.read_text())
+    assert saved["writes"]["waiver_claim_bbid"]["_note"] == "pinned by hand"
+    assert saved["_source"] == "hand-verified"
+    assert "submit_lineup" in saved["writes"]
+    assert Capability.WAIVER_CLAIM_BBID in report.kept_writes
+    assert "[KEPT] waiver_claim_bbid" in report.render()
+    reloaded = EndpointRegistry.load(lock_path)
+    assert reloaded.write(Capability.WAIVER_CLAIM_BBID).is_verified

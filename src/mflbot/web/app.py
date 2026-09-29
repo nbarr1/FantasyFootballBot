@@ -107,7 +107,8 @@ def build_app(
     submit at all.
 
     ``allow_jobs=False`` additionally removes the buttons that run ingestion
-    and analysis, leaving a viewer over whatever the scheduler produced.
+    and analysis, leaving a viewer over whatever the scheduler produced. It
+    does not stop a scheduler requested with ``start_scheduler``.
 
     ``start_scheduler=True`` starts the background scheduler with the server,
     so one process both watches the league and serves the dashboard. That is
@@ -127,7 +128,7 @@ def build_app(
 
     @contextlib.asynccontextmanager
     async def lifespan(_app):
-        if start_scheduler and allow_jobs:
+        if start_scheduler:
             _start_scheduler()
             log.info("scheduler started with the dashboard")
         yield

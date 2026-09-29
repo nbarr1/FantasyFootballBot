@@ -48,9 +48,13 @@ def payload_from_dict(kind: str, data: dict[str, Any]) -> ActionPayload:
     for key, value in list(data.items()):
         # Tuples round-trip through JSON as lists; restore them so payload
         # hashes computed before and after a save agree.
-        annotation = cls.__annotations__.get(key, "")
-        if isinstance(value, list) and "tuple" in str(annotation):
+        annotation = str(cls.__annotations__.get(key, ""))
+        if isinstance(value, list) and "tuple" in annotation:
             data[key] = tuple(value)
+        # Datetimes are stored as their str() form. Left as text, the write
+        # client would send that text where MFL expects a Unix timestamp.
+        elif isinstance(value, str) and "datetime" in annotation:
+            data[key] = _parse_dt(value)
     return cls(**data)
 
 

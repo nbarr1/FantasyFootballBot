@@ -602,3 +602,31 @@ def test_franchise_id_is_never_sent_on_any_real_write(db, store, tokens) -> None
         )
         client.submit(payload, token)
         assert "0007" not in transport.posted.values(), transport.posted
+
+
+def test_a_trade_expiry_survives_being_stored(db, store, tokens) -> None:
+    """Loaded back from the store, an expiry must still be sent as an epoch."""
+    from datetime import UTC, datetime
+
+    from mflbot.recommend.models import (
+        Confidence,
+        Evidence,
+        Recommendation,
+        RecommendationKind,
+        TradeProposalPayload,
+    )
+
+    expiry = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    recommendation = Recommendation(
+        kind=RecommendationKind.TRADE_PROPOSAL,
+        payload=TradeProposalPayload(
+            capability=Capability.PROPOSE_TRADE, league_id="TEST0001",
+            franchise_id="0001", to_franchise_id="0002",
+            gives_player_ids=("p-1",), receives_player_ids=("p-2",), expires_at=expiry,
+        ),
+        rationale="synthetic", evidence=Evidence(), confidence=Confidence.LOW,
+    )
+    store.save(recommendation)
+    loaded = store.get(recommendation.id)
+    assert loaded.payload.expires_at == expiry
+    assert loaded.payload_hash == recommendation.payload_hash

@@ -666,3 +666,48 @@ def test_a_non_ascii_csrf_token_is_refused_not_a_server_error(signed_in, context
         f"/recommendations/{recommendation.id}/approve", data={"csrf_token": "é"}
     )
     assert response.status_code == 403
+
+
+def test_a_jobs_console_shows_only_that_jobs_output(context) -> None:
+    """Logs and prints from other threads must not appear in a job's output."""
+    import logging
+    import threading
+
+    from mflbot.web.events import EventBus
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def noisy_neighbour() -> None:
+        started.wait(5)
+        logging.getLogger("mflbot.somewhere_else").warning("NEIGHBOUR-LOG")
+        print("NEIGHBOUR-PRINT")
+        release.set()
+
+    def slow_status(args, ctx):
+        started.set()
+        release.wait(5)
+        print("JOB-PRINT")
+        return 0
+
+    manager = JobManager(context, EventBus())
+    from mflbot import cli
+
+    original = cli.cmd_status
+    cli.cmd_status = slow_status
+    try:
+        neighbour = threading.Thread(target=noisy_neighbour)
+        neighbour.start()
+        run = manager.submit("status", {}, actor="test")
+        neighbour.join(10)
+        deadline = time.time() + 10
+        while not manager.get(run.id).is_finished and time.time() < deadline:
+            time.sleep(0.05)
+    finally:
+        cli.cmd_status = original
+        manager.stop()
+
+    output = "\n".join(manager.get(run.id).lines)
+    assert "JOB-PRINT" in output
+    assert "NEIGHBOUR-LOG" not in output
+    assert "NEIGHBOUR-PRINT" not in output
